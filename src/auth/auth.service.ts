@@ -65,32 +65,25 @@ export class AuthService {
   async refresh(refreshToken: string) {
     const tokens = await this.refreshRepo.findAllValid();
     for (const stored of tokens) {
-      const match = await bcrypt.compare(refreshToken, stored.tokenHash)
+      const match = await bcrypt.compare(refreshToken, stored.tokenHash);
       if (!match) continue;
-
-      // 🔒 rotación
-      await this.refreshRepo.revoke(stored.id)
-
-      const user = await this.usersRepo.findById(stored.id)
+      await this.refreshRepo.revoke(stored.id);
+      const user = await this.usersRepo.findById(stored.userId);
       if (!user) {
         throw new UnauthorizedException('User not found');
       }
-
       const newAccessToken = this.generateAccessToken(user);
       const newRefreshToken = this.generateRefreshToken(user);
-
       await this.refreshRepo.create({
         tokenHash: await bcrypt.hash(newRefreshToken, 10),
         userId: user.id,
         expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 24 * 30),
       });
-
       return {
         accessToken: newAccessToken,
         refreshToken: newRefreshToken,
       };
     }
-
     throw new UnauthorizedException();
   }
 }
