@@ -1,11 +1,13 @@
-import { Injectable } from '@nestjs/common';
-import { PrismaService } from 'src/prisma/prisma.service';
-
+import { Injectable, Module } from '@nestjs/common';
+import { ProductsRepository } from './products.repository';
+@Module({
+  imports: [ProductsRepository],
+})
 @Injectable()
 export class ProductsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private repo: ProductsRepository) {}
 
   findAll() {
-    return this.prisma.product.findMany()
+    return this.repo.findAll();
   }
 }
