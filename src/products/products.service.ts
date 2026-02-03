@@ -10,4 +10,7 @@ export class ProductsService {
   findAll() {
     return this.repo.findAll();
   }
+  createProduct() {
+    return 'se estan creando';
+  }
 }

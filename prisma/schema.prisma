@@ -14,6 +14,7 @@ model User {
   createdAt DateTime @default(now())
   cart      Cart?
   orders    Order[]
+  refreshTokens refreshToken[]
 }
 
 model Product {
@@ -55,4 +56,17 @@ model Order {
 enum Role {
   USER
   ADMIN
+}
+
+model refreshToken {
+  id        Int      @id @default(autoincrement())
+  tokenHash String
+  userId    Int
+  revoked   Boolean  @default(false)
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
 }

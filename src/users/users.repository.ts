@@ -6,10 +6,12 @@ export class UsersRepository {
   constructor(private prisma: PrismaService) {}
 
   findByEmail(email: string) {
-    return this.prisma.client.user.findUnique({ where: { email } });
+    return this.prisma.user.findUnique({ where: { email } });
   }
-
+  findById(id: number) {
+    return this.prisma.user.findUnique({ where: { id } });
+  }
   create(data: { email: string; password: string }) {
-    return this.prisma.client.user.create({ data });
+    return this.prisma.user.create({ data });
   }
 }

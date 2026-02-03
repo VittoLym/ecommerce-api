@@ -7,16 +7,16 @@ export class ProductsRepository {
   constructor(private prisma: PrismaService) {}
 
   findAll(): Promise<Product[]> {
-    return this.prisma.client.product.findMany();
+    return this.prisma.product.findMany();
   }
 
   findById(id: number): Promise<Product | null> {
-    return this.prisma.client.product.findUnique({
+    return this.prisma.product.findUnique({
       where: { id },
     });
   }
 
   create(data: Omit<Product, 'id'>): Promise<Product> {
-    return this.prisma.client.product.create({ data });
+    return this.prisma.product.create({ data });
   }
 }
