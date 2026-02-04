@@ -18,7 +18,6 @@ export class RefreshTokensRepository {
       },
     });
   }
-
   findAllValid() {
     return this.prisma.refreshToken.findMany({
       where: {

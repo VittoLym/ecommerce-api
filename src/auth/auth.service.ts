@@ -86,4 +86,20 @@ export class AuthService {
     }
     throw new UnauthorizedException();
   }
+  async logout(refreshToken: string) {
+    const tokens = await this.refreshRepo.findAllValid();
+    for (const stored of tokens) {
+      const match = await bcrypt.compare(refreshToken, stored.tokenHash);
+      if (!match) continue;
+      const rev = await this.refreshRepo.revoke(stored.id);
+      if (!rev) {
+        throw new UnauthorizedException('User not found');
+      }
+      return {
+        userId: rev.userId,
+        id: rev.id,
+        message: 'Token Revoked',
+      };
+    }
+  }
 }
