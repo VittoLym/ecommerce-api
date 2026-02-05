@@ -44,10 +44,9 @@ export class AuthController {
     return { accessToken };
   }
   @Post('logout')
-  async logout(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
+  logout(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const refreshToken = req.cookies['refreshToken'] as string;
     if (!refreshToken) return { ok: true };
-    await this.refreshRepo.revokeAllByUser(payload.sub);
     res.clearCookie('refreshToken', {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',

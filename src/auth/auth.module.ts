@@ -22,5 +22,6 @@ import { RefreshTokensRepository } from './refresh-tokens.repository';
     JwtStrategy,
     RefreshTokensRepository,
   ],
+  exports: [PassportModule, JwtModule],
 })
 export class AuthModule {}

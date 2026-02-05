@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { CreateProductDto } from './dto/create.products.dto';
 import { Product } from '@prisma/client';
 
 @Injectable()
@@ -16,7 +17,14 @@ export class ProductsRepository {
     });
   }
 
-  create(data: Omit<Product, 'id'>): Promise<Product> {
-    return this.prisma.product.create({ data });
+  create(dto: CreateProductDto) {
+    console.log(dto);
+    return this.prisma.product.create({
+      data: {
+        name: dto.name,
+        price: dto.price,
+        stock: dto.stock,
+      },
+    });
   }
 }

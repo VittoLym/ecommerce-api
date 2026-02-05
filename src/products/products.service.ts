@@ -1,5 +1,6 @@
 import { Injectable, Module } from '@nestjs/common';
 import { ProductsRepository } from './products.repository';
+import { CreateProductDto } from './dto/create.products.dto';
 @Module({
   imports: [ProductsRepository],
 })
@@ -10,7 +11,10 @@ export class ProductsService {
   findAll() {
     return this.repo.findAll();
   }
-  createProduct() {
-    return 'se estan creando';
+  findById(id: number) {
+    return this.repo.findById(id);
+  }
+  create(dto: CreateProductDto) {
+    return this.repo.create(dto);
   }
 }

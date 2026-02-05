@@ -24,6 +24,7 @@ model Product {
   stock     Int
   createdAt DateTime   @default(now())
   cartItems CartItem[]
+  orderItems OrderItem[]
 }
 
 model Cart {
@@ -34,12 +35,12 @@ model Cart {
 }
 
 model CartItem {
-  id        Int
   cartId    Int
   productId Int
   quantity  Int
-  cart      Cart    @relation(fields: [cartId], references: [id])
-  product   Product @relation(fields: [productId], references: [id])
+
+  cart    Cart    @relation(fields: [cartId], references: [id])
+  product Product @relation(fields: [productId], references: [id])
 
   @@id([cartId, productId])
 }
@@ -48,9 +49,29 @@ model Order {
   id        Int      @id @default(autoincrement())
   userId    Int
   total     Int
-  status    String
+  status    OrderStatus @default(PENDING)
   createdAt DateTime @default(now())
-  user      User     @relation(fields: [userId], references: [id])
+
+  items     OrderItem[]
+  user      User @relation(fields: [userId], references: [id])
+}
+
+model OrderItem {
+  id        Int @id @default(autoincrement())
+  orderId  Int
+  productId Int
+  price     Int
+  quantity  Int
+
+  order   Order   @relation(fields: [orderId], references: [id])
+  product Product @relation(fields: [productId], references: [id])
+}
+
+enum OrderStatus {
+  PENDING
+  PAID
+  CANCELLED
+  SHIPPED
 }
 
 enum Role {
