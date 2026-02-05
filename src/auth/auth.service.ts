@@ -4,6 +4,7 @@ import * as bcrypt from 'bcrypt';
 import { UsersRepository } from '../users/users.repository';
 import { RefreshTokensRepository } from './refresh-tokens.repository';
 import 'dotenv/config';
+import { LoginDto } from './dto/login.dto';
 
 @Injectable()
 export class AuthService {
@@ -21,7 +22,6 @@ export class AuthService {
       },
     });
   }
-
   private generateRefreshToken(payload: object) {
     return this.jwt.sign({
       payload: { ...payload, tokenType: 'refresh' },
@@ -39,8 +39,8 @@ export class AuthService {
     });
     return { id: user.id, email: user.email };
   }
-
-  async login(email: string, password: string) {
+  async login(dto: LoginDto) {
+    const { email, password } = dto;
     const user = await this.usersRepo.findByEmail(email);
     if (!user) throw new UnauthorizedException('Invalid credentials');
     const valid = await bcrypt.compare(password, user.password);
@@ -62,10 +62,10 @@ export class AuthService {
       refresh_token,
     };
   }
-  async refresh(refreshToken: string) {
+  async refresh(oldRefreshToken: string) {
     const tokens = await this.refreshRepo.findAllValid();
     for (const stored of tokens) {
-      const match = await bcrypt.compare(refreshToken, stored.tokenHash);
+      const match = await bcrypt.compare(oldRefreshToken, stored.tokenHash);
       if (!match) continue;
       await this.refreshRepo.revoke(stored.id);
       const user = await this.usersRepo.findById(stored.userId);
