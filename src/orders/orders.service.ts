@@ -1,49 +1,72 @@
-import { Injectable, BadRequestException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { CartService } from 'src/cart/cart.service';
 
 @Injectable()
 export class OrdersService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private cartService: CartService,
+  ) {}
   async checkout(userId: number) {
     return this.prisma.$transaction(async (tx) => {
-      const cart = await tx.cart.findUnique({
-        where: { userId },
-        include: { items: { include: { product: true } } },
+      const cart = await this.cartService.getOrCreateCart(userId);
+      const items = await tx.cartItem.findMany({
+        where: { cartId: cart.id },
+        include: { product: true },
       });
-      if (!cart || cart.items.length === 0) {
-        throw new BadRequestException('Carrito vacío');
+
+      if (items.length === 0) {
+        throw new Error('Cart is empty');
       }
-      for (const item of cart.items) {
+      for (const item of items) {
         if (item.product.stock < item.quantity) {
-          throw new BadRequestException(
-            `Stock insuficiente para ${item.product.name}`,
+          throw new Error(
+            `Insufficient stock for product ${item.product.name}`,
           );
         }
       }
-      const total = cart.items.reduce(
-        (sum, item) => sum + item.product.price * item.quantity,
-        0,
-      );
       const order = await tx.order.create({
         data: {
           userId,
-          total,
-          items: {
-            create: cart.items.map((item) => ({
-              productId: item.productId,
-              price: item.product.price,
-              quantity: item.quantity,
-            })),
-          },
+          status: 'PENDING',
+          total: items.reduce(
+            (sum, i) => sum + i.quantity * i.product.price,
+            0,
+          ),
         },
-        include: { items: true },
       });
-      for (const item of cart.items) {
-        await tx.product.update({
-          where: { id: item.productId },
-          data: { stock: { decrement: item.quantity } },
+      await tx.orderItem.createMany({
+        data: items.map((i) => ({
+          orderId: order.id,
+          productId: i.productId,
+          quantity: i.quantity,
+          price: i.product.price,
+        })),
+      });
+      for (const item of items) {
+        const updated = await tx.product.updateMany({
+          where: {
+            id: item.productId,
+            stock: { gte: item.quantity },
+          },
+          data: {
+            stock: { decrement: item.quantity },
+          },
         });
+        if (updated.count === 0) {
+          throw new Error('Stock race condition detected');
+        }
       }
+      await tx.paymentAttempt.create({
+        data: {
+          orderId: order.id,
+          userId,
+          amount: order.total,
+          status: 'PENDING',
+          provider: 'mock',
+        },
+      });
       await tx.cartItem.deleteMany({
         where: { cartId: cart.id },
       });
