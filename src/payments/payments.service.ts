@@ -5,10 +5,16 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { OrdersRepository } from 'src/orders/orders.repository';
+import { PaymentAttemptRepository } from './paymentsAttempts.repository';
 
 @Injectable()
 export class PaymentsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private ordersRepo: OrdersRepository,
+    private attemptsRepo: PaymentAttemptRepository,
+  ) {}
 
   async pay(orderId: number, userId: number) {
     try {
@@ -29,6 +35,16 @@ export class PaymentsService {
       if (!success) {
         throw new Error('Pago rechazado');
       }
+      const attempt = await this.prisma.paymentAttempt.create({
+        data: {
+          orderId,
+          userId,
+          amount: order.total,
+          provider: 'mock',
+          status: success ? 'SUCCESS' : 'FAILED',
+          errorMessage: success ? null : 'Tarjeta rechazada',
+        },
+      });
       return this.prisma.order.update({
         where: { id: orderId },
         data: { status: 'PAID' },
@@ -41,5 +57,52 @@ export class PaymentsService {
 
       throw new BadRequestException('Pago fallido');
     }
+  }
+  async payWithRetry(orderId: number, userId: number) {
+    const order = await this.ordersRepo.findPending(orderId, userId);
+
+    const failedCount = await this.attemptsRepo.countFailed(orderId);
+    if (failedCount >= 3) {
+      throw new BadRequestException('Máximo de intentos alcanzado');
+    }
+
+    const last = await this.attemptsRepo.lastAttempt(orderId);
+    if (last && !last.retryable) {
+      throw new BadRequestException('Pago no reintentable');
+    }
+
+    const success = Math.random() > 0.5;
+    const amount = order.total;
+    if (!success) {
+      const errorCode =
+        Math.random() > 0.5 ? 'card_declined' : 'insufficient_funds';
+
+      const retryable = !['insufficient_funds'].includes(errorCode);
+      await this.attemptsRepo.create(
+        orderId,
+        userId,
+        amount,
+        'FAILED',
+        'mock',
+        retryable,
+        errorCode,
+      );
+
+      await this.ordersRepo.updateStatus(orderId, 'FAILED');
+
+      throw new BadRequestException(`Pago fallido: ${errorCode}`);
+    }
+
+    await this.attemptsRepo.create(
+      orderId,
+      userId,
+      amount,
+      'SUCCESS',
+      'mock',
+      false,
+      '',
+    );
+
+    return this.ordersRepo.updateStatus(orderId, 'PAID');
   }
 }

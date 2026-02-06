@@ -10,10 +10,23 @@ import { OrdersModule } from './orders/orders.module';
 import { PaymentsService } from './payments/payments.service';
 import { PaymentsController } from './payments/payments.controller';
 import { PaymentsModule } from './payments/payments.module';
+import { PaymentAttemptRepository } from './payments/paymentsAttempts.repository';
 
 @Module({
-  imports: [ProductsModule, PrismaModule, AuthModule, CartModule, OrdersModule, PaymentsModule],
+  imports: [
+    ProductsModule,
+    PrismaModule,
+    AuthModule,
+    CartModule,
+    OrdersModule,
+    PaymentsModule,
+  ],
   controllers: [AppController, PaymentsController],
-  providers: [AppService, CartService, PaymentsService],
+  providers: [
+    AppService,
+    CartService,
+    PaymentsService,
+    PaymentAttemptRepository,
+  ],
 })
 export class AppModule {}

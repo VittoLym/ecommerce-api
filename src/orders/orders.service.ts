@@ -1,8 +1,4 @@
-import {
-  Injectable,
-  BadRequestException,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable, BadRequestException } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 
 @Injectable()
@@ -63,15 +59,22 @@ export class OrdersService {
       orderBy: { createdAt: 'desc' },
     });
   }
+  async getPaidOrder(orderId: number) {
+    return await this.prisma.order.findFirst({ where: { id: orderId } });
+  }
   async refund(orderId: number, userId: number) {
-    const order = await this.prisma.order.findUnique({
-      where: { id: orderId },
+    const order = await this.getPaidOrder(orderId);
+    await this.prisma.paymentAttempt.create({
+      data: {
+        orderId,
+        userId: order!.userId,
+        amount: -order!.total,
+        provider: 'mock',
+        status: 'SUCCESS',
+        errorMessage: 'Refund',
+      },
     });
-    if (!order) throw new NotFoundException();
-    if (order.status !== 'PAID') {
-      throw new BadRequestException('No se puede devolver');
-    }
-    await new Promise((res) => setTimeout(res, 300));
+
     return this.prisma.order.update({
       where: { id: orderId },
       data: { status: 'REFUNDED' },

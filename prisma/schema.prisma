@@ -54,6 +54,7 @@ model Order {
 
   items     OrderItem[]
   user      User @relation(fields: [userId], references: [id])
+  payment PaymentAttempt[]
 }
 
 model OrderItem {
@@ -92,4 +93,27 @@ model refreshToken {
   user User @relation(fields: [userId], references: [id])
 
   @@index([userId])
+}
+
+model PaymentAttempt {
+  id            Int      @id @default(autoincrement())
+  orderId       Int
+  userId        Int
+  amount        Int
+  status        PaymentStatus
+  provider      String   // 'mock' | 'stripe'
+  errorCode     String?
+  retryable    Boolean @default(true)
+  errorMessage  String?
+  createdAt     DateTime @default(now())
+
+  order Order @relation(fields: [orderId], references: [id])
+
+  @@index([orderId])
+}
+
+enum PaymentStatus {
+  SUCCESS
+  FAILED
+  PENDING
 }
