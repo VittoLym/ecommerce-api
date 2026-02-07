@@ -1,6 +1,11 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+} from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { OrderStatus, Prisma } from '@prisma/client';
+import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 
 @Injectable()
 export class AdminService {
@@ -150,17 +155,6 @@ export class AdminService {
               createdAt: true,
             },
           },
-          // Si tienes envíos/shipping
-          shipping: {
-            select: {
-              id: true,
-              address: true,
-              status: true,
-              trackingNumber: true,
-              estimatedDelivery: true,
-              createdAt: true,
-            },
-          },
         },
       });
 
@@ -174,8 +168,151 @@ export class AdminService {
     }
   }
 
-  async changeStatusOrder(id: number) {
-    await this.prisma.order.findMany();
-    console.log(id);
+  async changeStatusOrder(id: number, dto: UpdateOrderStatusDto) {
+    // 1. Verificar que la orden existe
+    const existingOrder = await this.prisma.order.findUnique({
+      where: { id },
+      select: { id: true, status: true, userId: true, total: true },
+    });
+    if (!existingOrder) {
+      throw new NotFoundException(`Orden con ID ${id} no encontrada`);
+    }
+    this.validateStatusTransition(existingOrder.status, dto.status);
+    return await this.prisma.$transaction(async (tx) => {
+      const updatedOrder = await tx.order.update({
+        where: { id },
+        data: {
+          status: dto.status,
+        },
+        include: {
+          items: true,
+          user: {
+            select: {
+              id: true,
+              email: true,
+            },
+          },
+        },
+      });
+      await this.handleStatusSpecificActions(id, dto.status, tx);
+      return {
+        success: true,
+        message: `Orden ${id} actualizada de ${existingOrder.status} a ${dto.status}`,
+        order: updatedOrder,
+        previousStatus: existingOrder.status,
+        newStatus: dto.status,
+      };
+    });
+  }
+
+  private validateStatusTransition(
+    currentStatus: OrderStatus,
+    newStatus: OrderStatus,
+  ) {
+    const allowedTransitions: Record<OrderStatus, OrderStatus[]> = {
+      PENDING: ['PENDING', 'CANCELLED'],
+      PAID: ['PENDING', 'SHIPPED', 'REFUNDED'],
+      FAILED: ['FAILED', 'CANCELLED'],
+      SHIPPED: ['PAID', 'SHIPPED'],
+      CANCELLED: [],
+      REFUNDED: [],
+    };
+    if (!allowedTransitions[currentStatus]) {
+      return;
+    }
+    if (!allowedTransitions[currentStatus].includes(newStatus)) {
+      throw new BadRequestException(
+        `No se puede cambiar el estado de ${currentStatus} a ${newStatus}. ` +
+        `Transiciones permitidas: ${allowedTransitions[currentStatus].join(', ') || 'ninguna'}`
+      );
+    }
+    if (currentStatus === 'CANCELLED' || currentStatus === 'SHIPPED') {
+      throw new BadRequestException(
+        `No se puede modificar una orden en estado ${currentStatus}`,
+      );
+    }
+  }
+  private async handleStatusSpecificActions(
+    orderId: number,
+    newStatus: OrderStatus,
+    tx: any,
+  ) {
+    switch (newStatus) {
+      case 'CANCELLED':
+        await this.releaseInventory(orderId, tx);
+        await this.sendCancellationNotification(orderId);
+        break;
+      case 'SHIPPED':
+        await this.createShippingRecord(orderId, tx);
+        await this.generateTrackingNumber(orderId, tx);
+        break;
+      case 'PAID':
+        await this.markAsDelivered(orderId, tx);
+        await this.calculateCommissions(orderId, tx);
+        break;
+      case 'REFUNDED':
+        await this.processRefund(orderId, tx);
+        await this.sendRefundNotification(orderId);
+        break;
+    }
+  }
+  private async releaseInventory(orderId: number, tx: any) {
+    const orderItems = await tx.orderItem.findMany({
+      where: { orderId },
+      include: { product: true },
+    });
+    for (const item of orderItems) {
+      await tx.product.update({
+        where: { id: item.productId },
+        data: {
+          stock: {
+            increment: item.quantity,
+          },
+        },
+      });
+    }
+  }
+  private async createShippingRecord(orderId: number, tx: any) {
+    const existingShipping = await tx.shipping.findFirst({
+      where: { orderId },
+    });
+    if (!existingShipping) {
+      await tx.shipping.create({
+        data: {
+          orderId,
+          status: 'SHIPPED',
+          shippingMethod: 'STANDARD',
+          estimatedDelivery: new Date(Date.now() + 5 * 24 * 60 * 60 * 1000), // 5 días
+        },
+      });
+    }
+  }
+  private async generateTrackingNumber(orderId: number, tx: any) {
+    const trackingNumber = `TRK${Date.now()}${orderId}`;
+    await tx.shipping.update({
+      where: { orderId },
+      data: { trackingNumber },
+    });
+  }
+  private async sendCancellationNotification(orderId: number) {
+    console.log(`Enviando notificación de cancelación para orden ${orderId}`);
+  }
+  private async sendRefundNotification(orderId: number) {
+    console.log(`Enviando notificación de reembolso para orden ${orderId}`);
+  }
+  private async processRefund(orderId: number, tx: any) {
+    console.log(`Procesando reembolso para orden ${orderId}`);
+  }
+  private async markAsDelivered(orderId: number, tx: any) {
+    await tx.shipping.update({
+      where: { orderId },
+      data: {
+        status: 'DELIVERED',
+        deliveredAt: new Date(),
+      },
+    });
+  }
+  private async calculateCommissions(orderId: number, tx: any) {
+    console.log(`Calculando comisiones para orden ${orderId}`);
   }
 }

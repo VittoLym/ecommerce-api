@@ -3,7 +3,10 @@ import {
   Controller,
   ParseIntPipe,
   Param,
-  Req,
+  Body,
+  UsePipes,
+  ValidationPipe,
+  BadRequestException,
   NotFoundException,
   Get,
   Patch,
@@ -14,6 +17,7 @@ import {
 import { AdminService } from './admin.service';
 import { JwtAuthGuard } from 'src/auth/jwt-auth.guard';
 import { RolesGuard } from 'src/auth/role.guard';
+import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 import { Roles } from 'src/auth/roles.decorator';
 
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -32,7 +36,6 @@ export class AdminController {
       const orders = await this.adminService.findAllOrders({
         page,
         limit,
-        status,
       });
       return {
         success: true,
@@ -76,7 +79,52 @@ export class AdminController {
   }
 
   @Patch('orders/:id/status')
-  async changeStatusOrder(@Param('id', ParseIntPipe) id: number) {
-    return await this.adminService.changeStatusOrder(id);
+  @UsePipes(new ValidationPipe({ transform: true }))
+  async changeStatusOrder(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() updateOrderStatusDto: UpdateOrderStatusDto,
+  ) {
+    try {
+      if (!updateOrderStatusDto.status) {
+        throw new BadRequestException('El campo status es requerido');
+      }
+
+      const result = await this.adminService.changeStatusOrder(
+        id,
+        updateOrderStatusDto,
+      );
+
+      if (!result.success) {
+        throw new BadRequestException(result.message);
+      }
+
+      return {
+        success: true,
+        message: 'Estado de orden actualizado exitosamente',
+        data: {
+          order: result.order,
+          previousStatus: result.previousStatus,
+          newStatus: result.newStatus,
+        },
+      };
+    } catch (error) {
+      if (
+        error instanceof NotFoundException ||
+        error instanceof BadRequestException
+      ) {
+        throw error;
+      }
+
+      console.error(`Error cambiando estado de orden ${id}:`, error);
+
+      throw new HttpException(
+        {
+          success: false,
+          message: 'Error al cambiar el estado de la orden',
+          error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+        },
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
   }
 }
