@@ -11,6 +11,9 @@ import { PaymentsService } from './payments/payments.service';
 import { PaymentsController } from './payments/payments.controller';
 import { PaymentsModule } from './payments/payments.module';
 import { PaymentAttemptRepository } from './payments/paymentsAttempts.repository';
+import { AdminService } from './admin/admin.service';
+import { AdminController } from './admin/admin.controller';
+import { AdminModule } from './admin/admin.module';
 
 @Module({
   imports: [
@@ -20,13 +23,15 @@ import { PaymentAttemptRepository } from './payments/paymentsAttempts.repository
     CartModule,
     OrdersModule,
     PaymentsModule,
+    AdminModule,
   ],
-  controllers: [AppController, PaymentsController],
+  controllers: [AppController, PaymentsController, AdminController],
   providers: [
     AppService,
     CartService,
     PaymentsService,
     PaymentAttemptRepository,
+    AdminService,
   ],
 })
 export class AppModule {}
