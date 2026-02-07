@@ -82,25 +82,49 @@ export class OrdersService {
       orderBy: { createdAt: 'desc' },
     });
   }
-  async getPaidOrder(orderId: number) {
-    return await this.prisma.order.findFirst({ where: { id: orderId } });
+  async getPaidOrder(id: number) {
+    return await this.prisma.order.findFirst({
+      where: { id },
+      include: {
+        items: {
+          include: {
+            product: true,
+          },
+        },
+        payment: true,
+      },
+    });
   }
   async refund(orderId: number, userId: number) {
     const order = await this.getPaidOrder(orderId);
-    await this.prisma.paymentAttempt.create({
-      data: {
-        orderId,
-        userId: order!.userId,
-        amount: -order!.total,
-        provider: 'mock',
-        status: 'SUCCESS',
-        errorMessage: 'Refund',
-      },
+    return this.prisma.$transaction(async (tx) => {
+      await tx.paymentAttempt.create({
+        data: {
+          orderId,
+          userId: order!.userId,
+          amount: -order!.total,
+          provider: 'mock',
+          status: 'REFUNDED',
+        },
+      });
+      await tx.order.update({
+        where: { id: orderId },
+        data: { status: 'REFUNDED' },
+      });
+      if (order === null) return;
+      console.log(order);
+      for (const item of order.items) {
+        await tx.product.update({
+          where: { id: item.productId },
+          data: {
+            stock: { increment: item.quantity },
+          },
+        });
+      }
+      return { ok: true };
     });
-
-    return this.prisma.order.update({
-      where: { id: orderId },
-      data: { status: 'REFUNDED' },
-    });
+  }
+  async findAllUser() {
+    return this.prisma.order.findMany();
   }
 }

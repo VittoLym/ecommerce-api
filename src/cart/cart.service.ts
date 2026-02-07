@@ -46,7 +46,6 @@ export class CartService {
     const product = await this.prisma.product.findFirst({
       where: { id: productId },
     });
-    console.log(productId, qty);
     if (product!.stock < qty) {
       throw new BadRequestException('Stock insuficiente');
     }
