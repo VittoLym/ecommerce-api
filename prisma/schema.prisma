@@ -6,115 +6,290 @@ datasource db {
   provider = "postgresql"
 }
 
+// ========== USUARIOS ==========
 model User {
-  id        Int      @id @default(autoincrement())
-  email     String   @unique
-  password  String
-  role      Role     @default(USER)
-  createdAt DateTime @default(now())
-  cart      Cart?
-  orders    Order[]
-  refreshTokens refreshToken[]
+  id           Int             @id @default(autoincrement())
+  email        String          @unique
+  password     String
+  name         String?
+  phone        String?
+  address      String?
+  role         Role            @default(USER)
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+  
+  // Relaciones
+  cart         Cart?
+  orders       Order[]
+  refreshTokens RefreshToken[]
+  
+  // Métodos virtuales
+  @@map("users")
 }
 
+// ========== PRODUCTOS ==========
 model Product {
-  id        Int        @id @default(autoincrement())
-  name      String
-  price     Int
-  stock     Int
-  createdAt DateTime   @default(now())
-  cartItems CartItem[]
-  orderItems OrderItem[]
+  id          Int           @id @default(autoincrement())
+  name        String
+  description String?
+  price       Int
+  stock       Int           @default(0)
+  sku         String?       @unique
+  category    String?
+  image       String?
+  isActive    Boolean       @default(true)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  
+  // Relaciones
+  cartItems   CartItem[]
+  orderItems  OrderItem[]
+  
+  @@map("products")
+  @@index([sku])
+  @@index([category])
 }
 
+// ========== CARRITO ==========
 model Cart {
-  id     Int        @id @default(autoincrement())
-  userId Int        @unique
+  id        Int        @id @default(autoincrement())
+  userId    Int        @unique
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+  
+  // Relaciones
   user   User       @relation(fields: [userId], references: [id])
   items  CartItem[]
+  
+  @@map("carts")
 }
 
 model CartItem {
+  id        Int     @id @default(autoincrement())
   cartId    Int
   productId Int
-  quantity  Int
-
+  quantity  Int     @default(1)
+  
+  // Relaciones
   cart    Cart    @relation(fields: [cartId], references: [id])
   product Product @relation(fields: [productId], references: [id])
-
-  @@id([cartId, productId])
+  
+  @@map("cart_items")
+  @@index([cartId])
+  @@index([productId])
 }
 
+// ========== ÓRDENES ==========
 model Order {
-  id        Int      @id @default(autoincrement())
-  userId    Int
-  total     Int
-  status    OrderStatus @default(PENDING)
-  createdAt DateTime @default(now())
-
+  id         Int          @id @default(autoincrement())
+  orderNumber String      @unique @default(uuid())
+  userId     Int
+  total      Int
+  subtotal   Int?
+  tax        Int?         @default(0)
+  shipping   Int?         @default(0)
+  status     OrderStatus  @default(PENDING)
+  notes      String?
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
+  
+  // Relaciones
   items     OrderItem[]
-  user      User @relation(fields: [userId], references: [id])
-  payment PaymentAttempt[]
+  user      User          @relation(fields: [userId], references: [id])
+  payments  PaymentAttempt[]
+  shippingInfo Shipping?
+  statusHistory OrderStatusHistory[]
+  
+  @@map("orders")
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt])
+  @@index([orderNumber])
 }
 
 model OrderItem {
   id        Int @id @default(autoincrement())
-  orderId  Int
+  orderId   Int
   productId Int
   price     Int
   quantity  Int
-
+  subtotal  Int // price * quantity (calculado)
+  
+  // Relaciones
   order   Order   @relation(fields: [orderId], references: [id])
   product Product @relation(fields: [productId], references: [id])
+  
+  @@map("order_items")
+  @@index([orderId])
+  @@index([productId])
 }
 
-enum OrderStatus {
-  PENDING
-  REFUNDED
-  PAID
-  CANCELLED
-  SHIPPED
-  FAILED
+// ========== ENVÍOS ==========
+model Shipping {
+  id              Int       @id @default(autoincrement())
+  orderId         Int       @unique
+  address         String
+  city            String
+  state           String
+  zipCode         String
+  country         String    @default("Colombia")
+  trackingNumber  String?
+  carrier         String?   @default("Servientrega")
+  status          ShippingStatus @default(PENDING)
+  estimatedDelivery DateTime?
+  deliveredAt     DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  
+  // Relaciones
+  order Order @relation(fields: [orderId], references: [id])
+  
+  @@map("shippings")
+  @@index([orderId])
+  @@index([trackingNumber])
+  @@index([status])
 }
 
+// ========== PAGOS ==========
+model PaymentAttempt {
+  id              Int            @id @default(autoincrement())
+  orderId         Int
+  amount          Int
+  status          PaymentStatus
+  paymentMethod   PaymentMethod
+  provider        PaymentProvider @default(MOCK)
+  transactionId   String?        @unique
+  currency        String         @default("COP")
+  cardLast4       String?
+  cardBrand       String?
+  errorCode       String?
+  errorMessage    String?
+  metadata        Json?
+  isRefundable    Boolean        @default(true)
+  refundedAmount  Int?           @default(0)
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  
+  // Relaciones
+  order Order @relation(fields: [orderId], references: [id])
+  statusHistory PaymentStatusHistory[]
+  
+  @@map("payment_attempts")
+  @@index([orderId])
+  @@index([transactionId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+// ========== HISTORIAL ==========
+model OrderStatusHistory {
+  id             Int       @id @default(autoincrement())
+  orderId        Int
+  previousStatus String?
+  newStatus      String
+  changedBy      String    // 'ADMIN', 'SYSTEM', 'USER'
+  reason         String?
+  notes          String?
+  metadata       Json?
+  createdAt      DateTime  @default(now())
+  
+  // Relaciones
+  order Order @relation(fields: [orderId], references: [id])
+  
+  @@map("order_status_history")
+  @@index([orderId])
+  @@index([createdAt])
+  @@index([changedBy])
+}
+
+model PaymentStatusHistory {
+  id             Int       @id @default(autoincrement())
+  paymentId      Int
+  previousStatus String?
+  newStatus      String
+  changedBy      String
+  reason         String?
+  metadata       Json?
+  createdAt      DateTime  @default(now())
+  
+  // Relaciones
+  payment PaymentAttempt @relation(fields: [paymentId], references: [id])
+  
+  @@map("payment_status_history")
+  @@index([paymentId])
+  @@index([createdAt])
+}
+
+// ========== TOKENS ==========
+model RefreshToken {
+  id        Int      @id @default(autoincrement())
+  tokenHash String   @unique
+  userId    Int
+  revoked   Boolean  @default(false)
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+  
+  // Relaciones
+  user User @relation(fields: [userId], references: [id])
+  
+  @@map("refresh_tokens")
+  @@index([userId])
+  @@index([tokenHash])
+}
+
+// ========== ENUMS ==========
 enum Role {
   USER
   ADMIN
 }
 
-model refreshToken {
-  id        Int      @id @default(autoincrement())
-  tokenHash String
-  userId    Int
-  revoked   Boolean  @default(false)
-  createdAt DateTime @default(now())
-  expiresAt DateTime
-
-  user User @relation(fields: [userId], references: [id])
-
-  @@index([userId])
-}
-
-model PaymentAttempt {
-  id            Int      @id @default(autoincrement())
-  orderId       Int
-  userId        Int
-  amount        Int
-  status        PaymentStatus
-  provider      String   // 'mock' | 'stripe'
-  errorCode     String?
-  retryable    Boolean @default(true)
-  errorMessage  String?
-  createdAt     DateTime @default(now())
-
-  order Order @relation(fields: [orderId], references: [id])
-
-  @@index([orderId])
+enum OrderStatus {
+  PENDING      // Orden creada, pendiente de pago
+  PROCESSING   // Pago confirmado, preparando pedido
+  PAID         // Pago completado
+  SHIPPED      // Enviado al cliente
+  DELIVERED    // Entregado al cliente
+  COMPLETED    // Proceso finalizado
+  CANCELLED    // Cancelado por usuario/admin
+  REFUNDED     // Reembolsado
+  RETURNED     // Devuelto por cliente
+  FAILED       // Falló el proceso
 }
 
 enum PaymentStatus {
-  SUCCESS
-  FAILED
-  PENDING
-  REFUNDED
+  PENDING      // Pago iniciado
+  PROCESSING   // Procesando pago
+  COMPLETED    // Pago exitoso
+  FAILED       // Pago fallido
+  REFUNDED     // Reembolsado
+  CANCELLED    // Cancelado
+  EXPIRED      // Expirado
+}
+
+enum PaymentMethod {
+  CARD         // Tarjeta de crédito/débito
+  PSE          // PSE (Colombia)
+  NEQUI        // Nequi
+  DAVIPLATA    // DaviPlata
+  CASH         // Efectivo
+  TRANSFER     // Transferencia bancaria
+}
+
+enum PaymentProvider {
+  MOCK         // Para pruebas
+  STRIPE       // Stripe
+  WOOMPI       // Wompi (Colombia)
+  PAYU         // PayU
+}
+
+enum ShippingStatus {
+  PENDING      // Pendiente de envío
+  PROCESSING   // Preparando envío
+  SHIPPED      // Enviado
+  IN_TRANSIT   // En tránsito
+  DELIVERED    // Entregado
+  RETURNED     // Devuelto
+  FAILED       // Falló la entrega
 }

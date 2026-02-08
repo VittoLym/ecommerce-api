@@ -6,6 +6,7 @@ import {
   Body,
   UsePipes,
   ValidationPipe,
+  DefaultValuePipe,
   BadRequestException,
   NotFoundException,
   Get,
@@ -121,6 +122,63 @@ export class AdminController {
         {
           success: false,
           message: 'Error al cambiar el estado de la orden',
+          error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+        },
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
+  @Get('payments')
+  @UsePipes(new ValidationPipe({ transform: true }))
+  async findAllPayments(
+    @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number = 1,
+    @Query('limit', new DefaultValuePipe(20), ParseIntPipe) limit: number = 20,
+    @Query('status') status?,
+    @Query('method') method?: PaymentMethodData,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+    @Query('userId') userId?: number,
+    @Query('orderId') orderId?: number,
+    @Query('transactionId') transactionId?: string,
+    @Query('sortBy', new DefaultValuePipe('createdAt'))
+    sortBy: string = 'createdAt',
+    @Query('sortOrder', new DefaultValuePipe('desc'))
+    sortOrder: 'asc' | 'desc' = 'desc',
+  ) {
+    try {
+      const result = await this.adminService.findAllPayments({
+        page,
+        limit,
+        status,
+        startDate,
+        endDate,
+        userId,
+        orderId,
+        transactionId,
+        sortBy,
+        sortOrder,
+      });
+
+      return {
+        success: true,
+        data: result.payments,
+        meta: {
+          total: result.total,
+          totalAmount: result.totalAmount,
+          page: result.page,
+          limit: result.limit,
+          pages: result.pages,
+          summary: result.summary,
+        },
+      };
+    } catch (error) {
+      console.error('Error en findAllPayments:', error);
+
+      throw new HttpException(
+        {
+          success: false,
+          message: 'Error al obtener pagos',
           error: process.env.NODE_ENV === 'development' ? error.message : undefined,
         },
         HttpStatus.INTERNAL_SERVER_ERROR,

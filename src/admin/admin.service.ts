@@ -6,6 +6,7 @@ import {
 import { PrismaService } from 'src/prisma/prisma.service';
 import { OrderStatus, Prisma } from '@prisma/client';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
+import { GetPaymentsDto } from './dto/get-payments.dto';
 
 @Injectable()
 export class AdminService {
@@ -314,5 +315,229 @@ export class AdminService {
   }
   private async calculateCommissions(orderId: number, tx: any) {
     console.log(`Calculando comisiones para orden ${orderId}`);
+  }
+  async findAllPayments(params: {
+    page: number;
+    limit: number;
+    status?;
+    startDate?: string;
+    endDate?: string;
+    userId?: number;
+    orderId?: number;
+    transactionId?: string;
+    sortBy?: string;
+    sortOrder?: 'asc' | 'desc';
+  }) {
+    const {
+      page,
+      limit,
+      status,
+      startDate,
+      endDate,
+      userId,
+      orderId,
+      transactionId,
+      sortBy = 'createdAt',
+      sortOrder = 'desc',
+    } = params;
+
+    const skip = (page - 1) * limit;
+    const where: Prisma.PaymentAttemptWhereInput = {};
+
+    if (status) where.status = status;
+    if (userId) where.order = { userId };
+    if (orderId) where.orderId = orderId;
+    if (startDate || endDate) {
+      where.createdAt = {};
+      if (startDate) where.createdAt.gte = new Date(startDate);
+      if (endDate) {
+        const end = new Date(endDate);
+        end.setHours(23, 59, 59, 999);
+        where.createdAt.lte = end;
+      }
+    }
+    const orderByField = this.validateSortField(sortBy);
+    const orderBy: Prisma.PaymentAttemptOrderByWithRelationInput = {
+      [orderByField]: sortOrder,
+    };
+
+    try {
+      const [payments, total, totalAmount, summary] = await Promise.all([
+        this.prisma.paymentAttempt.findMany({
+          where,
+          skip,
+          take: limit,
+          orderBy,
+          include: {
+            order: {
+              select: {
+                id: true,
+                total: true,
+                status: true,
+                user: {
+                  select: {
+                    id: true,
+                    email: true,
+                  },
+                },
+              },
+            },
+          },
+        }),
+
+        this.prisma.paymentAttempt.count({ where }),
+        this.prisma.paymentAttempt.aggregate({
+          where: {
+            ...where,
+            status: 'SUCCESS',
+          },
+          _sum: {
+            amount: true,
+          },
+        }),
+        this.prisma.paymentAttempt.groupBy({
+          by: ['status'],
+          where,
+          _count: {
+            _all: true,
+          },
+          _sum: {
+            amount: true,
+          },
+        }),
+      ]);
+      const transformedPayments = payments.map(payment => ({
+        ...payment,
+        order: payment
+          ? {
+              ...payment,
+            }
+          : null,
+        formattedAmount: this.formatCurrency(payment.amount),
+        createdAtFormatted: payment.createdAt.toLocaleDateString('es-ES', {
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+        }),
+      }));
+
+      const summaryMap = summary.reduce((acc, item) => {
+          acc[item.status] = {
+            count: item._count._all,
+            totalAmount: item._sum.amount || 0,
+          };
+          return acc;
+        },
+        {} as Record<string, { count: number; totalAmount: number }>,
+      );
+
+      return {
+        payments: transformedPayments,
+        total,
+        totalAmount: totalAmount._sum.amount || 0,
+        page,
+        limit,
+        pages: Math.ceil(total / limit),
+        summary: {
+          byStatus: summaryMap,
+          successfulPayments: summaryMap['COMPLETED']?.count || 0,
+          failedPayments: summaryMap['FAILED']?.count || 0,
+          pendingPayments: summaryMap['PENDING']?.count || 0,
+        },
+      };
+    } catch (error) {
+      console.error('Error en findAllPayments:', error);
+      throw error;
+    }
+  }
+  private validateSortField(sortBy: string): string {
+    const allowedFields = ['createdAt', 'updatedAt', 'amount', 'id'];
+    return allowedFields.includes(sortBy) ? sortBy : 'createdAt';
+  }
+  private formatCurrency(amount: number): string {
+    return new Intl.NumberFormat('es-ES', {
+      style: 'currency',
+      currency: 'COP',
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 0,
+    }).format(amount);
+  }
+  async getPaymentsStatistics(
+    range: 'today' | 'week' | 'month' | 'year' = 'month',
+  ) {
+    const now = new Date();
+    let startDate: Date;
+
+    switch (range) {
+      case 'today':
+        startDate = new Date(now.setHours(0, 0, 0, 0));
+        break;
+      case 'week':
+        startDate = new Date(now.setDate(now.getDate() - 7));
+        break;
+      case 'month':
+        startDate = new Date(now.setMonth(now.getMonth() - 1));
+        break;
+      case 'year':
+        startDate = new Date(now.setFullYear(now.getFullYear() - 1));
+        break;
+      default:
+        startDate = new Date(now.setMonth(now.getMonth() - 1));
+    }
+
+    const where: Prisma.PaymentAttemptWhereInput = {
+      createdAt: {
+        gte: startDate,
+      },
+    };
+
+    const [total, successful, failed, totalAmount, dailyStats] = await Promise.all([
+        this.prisma.paymentAttempt.count({ where }),
+        this.prisma.paymentAttempt.count({ where: { ...where, status: 'SUCCESS' } }),
+        this.prisma.paymentAttempt.count({ where: { ...where, status: 'FAILED' } }),
+        this.prisma.paymentAttempt.aggregate({
+          where: { ...where, status: 'SUCCESS' },
+          _sum: { amount: true },
+        }),
+        this.getDailyPaymentStats(startDate),
+      ]);
+
+    return {
+      total,
+      successful,
+      failed,
+      successRate: total > 0 ? (successful / total) * 100 : 0,
+      totalAmount: totalAmount._sum.amount || 0,
+      averageAmount: successful > 0 ? (totalAmount._sum.amount || 0) / successful : 0,
+      dailyStats,
+    };
+  }
+  private async getDailyPaymentStats(startDate: Date) {
+    const payments = await this.prisma.paymentAttempt.findMany({
+      where: {
+        createdAt: { gte: startDate },
+        status: 'SUCCESS',
+      },
+      select: {
+        amount: true,
+        createdAt: true,
+      },
+    });
+
+    const dailyStats = payments.reduce((acc, payment) => {
+        const date = payment.createdAt.toISOString().split('T')[0];
+        if (!acc[date]) {
+          acc[date] = { count: 0, amount: 0 };
+        }
+        acc[date].count++;
+        acc[date].amount += payment.amount;
+        return acc;
+      },
+      {} as Record<string, { count: number; amount: number }>,
+    );
+
+    return dailyStats;
   }
 }
