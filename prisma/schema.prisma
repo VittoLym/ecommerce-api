@@ -266,6 +266,7 @@ enum PaymentStatus {
   REFUNDED     // Reembolsado
   CANCELLED    // Cancelado
   EXPIRED      // Expirado
+  SUCCESS
 }
 
 enum PaymentMethod {
