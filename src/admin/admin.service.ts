@@ -6,7 +6,7 @@ import {
 import { PrismaService } from 'src/prisma/prisma.service';
 import { OrderStatus, Prisma } from '@prisma/client';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
-import { GetPaymentsDto } from './dto/get-payments.dto';
+import { PaymentStatus } from '@prisma/client';
 
 @Injectable()
 export class AdminService {
@@ -539,5 +539,258 @@ export class AdminService {
     );
 
     return dailyStats;
+  }
+  async orderExists(orderId: number): Promise<boolean> {
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      select: { id: true },
+    });
+    return !!order;
+  }
+  async getOrderPaymentAttempts(orderId: number) {
+    try {
+      const attempts = await this.prisma.paymentAttempt.findMany({
+        where: { orderId },
+        orderBy: { createdAt: 'desc' },
+        include: {
+          order: {
+            select: {
+              id: true,
+              total: true,
+              status: true,
+              orderNumber: true,
+              user: {
+                select: {
+                  id: true,
+                  email: true,
+                },
+              },
+            },
+          },
+        },
+      });
+      return attempts.map(attempt => this.transformPaymentAttempt(attempt));
+    } catch (error) {
+      console.error(
+        `Error en getOrderPaymentAttempts para orden ${orderId}:`,
+        error,
+      );
+      throw error;
+    }
+  }
+  private transformPaymentAttempt(attempt: any) {
+    const baseAttempt = {
+      id: attempt.id,
+      orderId: attempt.orderId,
+      amount: attempt.amount,
+      formattedAmount: this.formatCurrency(attempt.amount),
+      status: attempt.status,
+      paymentMethod: attempt.paymentMethod,
+      provider: attempt.provider,
+      transactionId: attempt.transactionId,
+      cardLast4: attempt.cardLast4,
+      cardBrand: attempt.cardBrand,
+      errorCode: attempt.errorCode,
+      errorMessage: attempt.errorMessage,
+      isRefundable: attempt.isRefundable,
+      refundedAmount: attempt.refundedAmount,
+      formattedRefundedAmount: attempt.refundedAmount 
+        ? this.formatCurrency(attempt.refundedAmount)
+        : null,
+      createdAt: attempt.createdAt,
+      updatedAt: attempt.updatedAt,
+      createdAtFormatted: attempt.createdAt.toLocaleDateString('es-ES', {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+      }),
+      statusDetails: this.getStatusDetails(attempt.status),
+      paymentMethodFormatted: this.formatPaymentMethod(attempt.paymentMethod),
+      isSuccessful: attempt.status === 'COMPLETED',
+      isFailed: attempt.status === 'FAILED',
+      isPending: attempt.status === 'PENDING',
+    };
+    if (attempt.order) {
+      return {
+        ...baseAttempt,
+        order: {
+          id: attempt.order.id,
+          orderNumber: attempt.order.orderNumber,
+          total: attempt.order.total,
+          formattedTotal: this.formatCurrency(attempt.order.total),
+          status: attempt.order.status,
+          user: attempt.order.user,
+        },
+      };
+    }
+    return baseAttempt;
+  }
+  private getStatusDetails(status: PaymentStatus) {
+    const statusMap = {
+      PENDING: {
+        label: 'Pendiente',
+        description: 'El pago está pendiente de procesamiento',
+        color: 'warning',
+        icon: 'clock',
+      },
+      PROCESSING: {
+        label: 'Procesando',
+        description: 'El pago está siendo procesado',
+        color: 'info',
+        icon: 'sync',
+      },
+      COMPLETED: {
+        label: 'Completado',
+        description: 'El pago fue exitoso',
+        color: 'success',
+        icon: 'check-circle',
+      },
+      FAILED: {
+        label: 'Fallido',
+        description: 'El pago falló',
+        color: 'danger',
+        icon: 'x-circle',
+      },
+      REFUNDED: {
+        label: 'Reembolsado',
+        description: 'El pago fue reembolsado',
+        color: 'info',
+        icon: 'refresh-cw',
+      },
+      CANCELLED: {
+        label: 'Cancelado',
+        description: 'El pago fue cancelado',
+        color: 'secondary',
+        icon: 'x',
+      },
+      EXPIRED: {
+        label: 'Expirado',
+        description: 'El pago expiró',
+        color: 'secondary',
+        icon: 'calendar-x',
+      },
+    };
+
+    return (statusMap[status] || {
+        label: status,
+        description: 'Estado desconocido',
+        color: 'secondary',
+        icon: 'help-circle',
+      }
+    );
+  }
+  private formatPaymentMethod(method: string): string {
+    const methodMap = {
+      CARD: 'Tarjeta de crédito/débito',
+      PSE: 'PSE - Pago Seguro en Línea',
+      NEQUI: 'Nequi',
+      DAVIPLATA: 'DaviPlata',
+      CASH: 'Efectivo',
+      TRANSFER: 'Transferencia bancaria',
+    };
+
+    return methodMap[method] || method;
+  }
+  async getOrderPaymentAnalytics(orderId: number) {
+    const attempts = await this.getOrderPaymentAttempts(orderId);
+    if (attempts.length === 0) {
+      return null;
+    }
+    const successfulAttempt = attempts.find(a => a.isSuccessful);
+    const attemptsByMethod = attempts.reduce((acc, attempt) => {
+      const method = attempt.paymentMethod;
+      if (!acc[method]) {
+        acc[method] = {
+          count: 0,
+          successful: 0,
+          totalAmount: 0,
+        };
+      }
+      acc[method].count++;
+      if (attempt.isSuccessful) {
+        acc[method].successful++;
+      }
+      acc[method].totalAmount += attempt.amount;
+      return acc;
+    }, {});
+    const timeAnalysis = this.analyzeAttemptTimes(attempts);
+    return {
+      orderId,
+      totalAttempts: attempts.length,
+      successfulAttempt: successfulAttempt || null,
+      attemptsByMethod,
+      timeAnalysis,
+      recommendations: this.generateRecommendations(attempts),
+    };
+  }
+  private analyzeAttemptTimes(attempts: any[]) {
+    if (attempts.length < 2) {
+      return null;
+    }
+    const sortedAttempts = [...attempts].sort((a, b) => 
+      new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+    );
+
+    const timeDifferences = [];
+    for (let i = 1; i < sortedAttempts.length; i++) {
+      const prevTime = new Date(sortedAttempts[i - 1].createdAt).getTime();
+      const currTime = new Date(sortedAttempts[i].createdAt).getTime();
+      const diffMinutes = Math.round((currTime - prevTime) / (1000 * 60));
+      timeDifferences.push(diffMinutes);
+    }
+
+    const averageTime = timeDifferences.reduce((a, b) => a + b, 0) / timeDifferences.length;
+    const maxTime = Math.max(...timeDifferences);
+    const minTime = Math.min(...timeDifferences);
+
+    return {
+      timeDifferences,
+      averageTimeMinutes: Math.round(averageTime),
+      maxTimeMinutes: maxTime,
+      minTimeMinutes: minTime,
+      totalTimeSpanMinutes: Math.round(
+        (new Date(sortedAttempts[sortedAttempts.length-1].createdAt).getTime() - 
+         new Date(sortedAttempts[0].createdAt).getTime()) / (1000 * 60)
+      ),
+    };
+  }
+  private generateRecommendations(attempts: any[]) {
+    const recommendations = [];
+    const failedAttempts = attempts.filter(a => a.isFailed);
+
+    if (failedAttempts.length > 0) {
+      // Análisis de errores comunes
+      const errorCodes = failedAttempts.reduce((acc, attempt) => {
+        if (attempt.errorCode) {
+          acc[attempt.errorCode] = (acc[attempt.errorCode] || 0) + 1;
+        }
+        return acc;
+      }, {});
+      if (errorCodes['card_declined']) {
+        recommendations.push({
+          type: 'error_analysis',
+          title: 'Tarjeta declinada',
+          message: 'Múltiples intentos con tarjeta declinada. Sugerir método de pago alternativo.',
+          severity: 'high',
+          action: 'suggest_alternative_payment',
+        });
+      }
+
+      if (errorCodes['insufficient_funds']) {
+        recommendations.push({
+          type: 'error_analysis',
+          title: 'Fondos insuficientes',
+          message: 'El cliente no tiene fondos suficientes. Considerar opciones de pago a cuotas.',
+          severity: 'medium',
+          action: 'suggest_installments',
+        });
+      }
+    }
+
+    const successfulIndex = attempts.findIndex(a => a.isSuccessful);
+    return recommendations;
   }
 }

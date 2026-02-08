@@ -185,4 +185,74 @@ export class AdminController {
       );
     }
   }
+
+  @Get('orders/:id/attempts')
+  async getOrderPaymentAttempts(@Param('id', ParseIntPipe) orderId: number) {
+    try {
+      const orderExists = await this.adminService.orderExists(orderId);
+      if (!orderExists) {
+        throw new NotFoundException(`Orden con ID ${orderId} no encontrada`);
+      }
+      const attempts = await this.adminService.getOrderPaymentAttempts(orderId);
+      return {
+        success: true,
+        data: {
+          orderId,
+          attempts,
+          summary: this.generateAttemptsSummary(attempts),
+        },
+      };
+    } catch (error) {
+      if (error instanceof NotFoundException) {
+        throw error;
+      }
+      console.error(
+        `Error obteniendo intentos de pago para orden ${orderId}:`,
+        error,
+      );
+      throw new HttpException(
+        {
+          success: false,
+          message: 'Error al obtener los intentos de pago de la orden',
+          error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+        },
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
+  private generateAttemptsSummary(attempts: any[]) {
+    if (attempts.length === 0) {
+      return {
+        totalAttempts: 0,
+        successfulAttempts: 0,
+        failedAttempts: 0,
+        pendingAttempts: 0,
+        successRate: 0,
+        lastAttemptStatus: null,
+        totalAmountAttempted: 0,
+        totalAmountCaptured: 0,
+      };
+    }
+
+    const successful = attempts.filter((a) => a.status === 'COMPLETED');
+    const failed = attempts.filter((a) => a.status === 'FAILED');
+    const pending = attempts.filter((a) => a.status === 'PENDING');
+    const totalAmountAttempted = attempts.reduce((sum, a) => sum + a.amount, 0);
+    const totalAmountCaptured = successful.reduce((sum, a) => sum + a.amount, 0);
+
+    return {
+      totalAttempts: attempts.length,
+      successfulAttempts: successful.length,
+      failedAttempts: failed.length,
+      pendingAttempts: pending.length,
+      successRate:
+        attempts.length > 0 ? (successful.length / attempts.length) * 100 : 0,
+      lastAttemptStatus: attempts[0]?.status, // Asumiendo orden descendente
+      lastAttemptDate: attempts[0]?.createdAt,
+      totalAmountAttempted,
+      totalAmountCaptured,
+      difference: totalAmountAttempted - totalAmountCaptured,
+    };
+  }
 }
