@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { PaymentProvider, PaymentMethod } from '@prisma/client';
 
 @Injectable()
 export class PaymentAttemptRepository {
@@ -10,18 +11,18 @@ export class PaymentAttemptRepository {
     amount: number,
     userId: number,
     status: 'PENDING' | 'SUCCESS' | 'FAILED' = 'PENDING',
-    provider = 'mock',
+    provider: PaymentProvider,
+    paymentMethod: PaymentMethod,
     retryable: boolean,
     errorCode?: string,
   ) {
     return await this.prisma.paymentAttempt.create({
       data: {
         orderId,
-        userId,
         amount,
         status,
         provider,
-        retryable,
+        paymentMethod,
         errorCode,
       },
     });

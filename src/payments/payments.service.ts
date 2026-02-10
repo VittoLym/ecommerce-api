@@ -38,9 +38,9 @@ export class PaymentsService {
       const attempt = await this.prisma.paymentAttempt.create({
         data: {
           orderId,
-          userId,
           amount: order.total,
-          provider: 'mock',
+          provider: 'MOCK',
+          paymentMethod: 'TRANSFER',
           status: success ? 'SUCCESS' : 'FAILED',
           errorMessage: success ? null : 'Tarjeta rechazada',
         },
@@ -67,7 +67,11 @@ export class PaymentsService {
     }
 
     const last = await this.attemptsRepo.lastAttempt(orderId);
-    if (last && !last.retryable) {
+    if (
+      last &&
+      last.errorMessage &&
+      ['insufficient_funds'].includes(last.errorMessage)
+    ) {
       throw new BadRequestException('Pago no reintentable');
     }
 
@@ -80,10 +84,11 @@ export class PaymentsService {
       const retryable = !['insufficient_funds'].includes(errorCode);
       await this.attemptsRepo.create(
         orderId,
-        userId,
         amount,
+        userId,
         'FAILED',
-        'mock',
+        'MOCK',
+        'TRANSFER',
         retryable,
         errorCode,
       );
@@ -95,12 +100,12 @@ export class PaymentsService {
 
     await this.attemptsRepo.create(
       orderId,
-      userId,
       amount,
+      userId,
       'SUCCESS',
-      'mock',
-      false,
-      '',
+      'MOCK',
+      'TRANSFER',
+      true,
     );
 
     return this.ordersRepo.updateStatus(orderId, 'PAID');

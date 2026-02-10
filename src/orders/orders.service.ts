@@ -42,6 +42,7 @@ export class OrdersService {
           productId: i.productId,
           quantity: i.quantity,
           price: i.product.price,
+          subtotal: i.quantity * i.product.price,
         })),
       });
       for (const item of items) {
@@ -61,10 +62,10 @@ export class OrdersService {
       await tx.paymentAttempt.create({
         data: {
           orderId: order.id,
-          userId,
           amount: order.total,
           status: 'PENDING',
-          provider: 'mock',
+          provider: 'MOCK',
+          paymentMethod: 'TRANSFER',
         },
       });
       await tx.cartItem.deleteMany({
@@ -91,7 +92,7 @@ export class OrdersService {
             product: true,
           },
         },
-        payment: true,
+        payments: true,
       },
     });
   }
@@ -101,10 +102,10 @@ export class OrdersService {
       await tx.paymentAttempt.create({
         data: {
           orderId,
-          userId: order!.userId,
           amount: -order!.total,
-          provider: 'mock',
+          provider: 'MOCK',
           status: 'REFUNDED',
+          paymentMethod: 'TRANSFER',
         },
       });
       await tx.order.update({
@@ -112,7 +113,6 @@ export class OrdersService {
         data: { status: 'REFUNDED' },
       });
       if (order === null) return;
-      console.log(order);
       for (const item of order.items) {
         await tx.product.update({
           where: { id: item.productId },

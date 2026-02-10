@@ -51,10 +51,8 @@ export class CartService {
     }
     return this.prisma.cartItem.upsert({
       where: {
-        cartId_productId: {
-          cartId: cart.id,
-          productId,
-        },
+        id: cart.id,
+        productId,
       },
       create: {
         cartId: cart.id,
@@ -72,10 +70,8 @@ export class CartService {
 
     return this.prisma.cartItem.delete({
       where: {
-        cartId_productId: {
-          cartId: cart.id,
-          productId,
-        },
+        id: cart.id,
+        productId,
       },
     });
   }

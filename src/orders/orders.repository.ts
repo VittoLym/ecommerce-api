@@ -16,6 +16,7 @@ export class OrdersRepository {
             productId: item.productId,
             quantity: item.quantity,
             price: item.product.price,
+            subtotal: item.quantity * item.product.price,
           })),
         },
       },

@@ -4,11 +4,12 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
-import { OrderStatus, Prisma } from '@prisma/client';
+import { OrderStatus, Prisma, PaymentStatus } from '@prisma/client';
+import { StockMovementType } from '@prisma/client';
+import { Role } from '@prisma/client';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 import { UpdateStockDto } from './dto/update-stock.dto';
 import { RestockDto } from './dto/restock.dto';
-import { PaymentStatus } from '@prisma/client';
 import { GetUsersDto } from './dto/get-users.dto';
 import { UpdateUserRoleDto } from './dto/update-user-role.dto';
 
@@ -90,7 +91,7 @@ export class AdminService {
               email: true,
             },
           },
-          payment: {
+          payments: {
             take: 1,
             orderBy: { createdAt: 'desc' },
             select: {
@@ -110,7 +111,7 @@ export class AdminService {
         ...item,
         subtotal: item.product.price * item.quantity,
       })),
-      latestPayment: order.payment[0] || null,
+      latestPayment: order.payments[0] || null,
       payment: undefined,
     }));
 
@@ -149,7 +150,7 @@ export class AdminService {
               createdAt: true,
             },
           },
-          payment: {
+          payments: {
             orderBy: {
               createdAt: 'desc',
             },
@@ -215,12 +216,16 @@ export class AdminService {
     newStatus: OrderStatus,
   ) {
     const allowedTransitions: Record<OrderStatus, OrderStatus[]> = {
-      PENDING: ['PENDING', 'CANCELLED'],
-      PAID: ['PENDING', 'SHIPPED', 'REFUNDED'],
+      PENDING: ['PENDING', 'CANCELLED', 'PAID'],
+      PAID: ['SHIPPED', 'REFUNDED'],
       FAILED: ['FAILED', 'CANCELLED'],
-      SHIPPED: ['PAID', 'SHIPPED'],
+      SHIPPED: ['DELIVERED', 'RETURNED'],
       CANCELLED: [],
       REFUNDED: [],
+      PROCESSING: ['PAID', 'FAILED', 'CANCELLED'],
+      COMPLETED: [],
+      DELIVERED: ['RETURNED'],
+      RETURNED: [],
     };
     if (!allowedTransitions[currentStatus]) {
       return;
@@ -730,19 +735,97 @@ export class AdminService {
       recommendations: this.generateRecommendations(attempts),
     };
   }
-  private analyzeAttemptTimes(attempts: any[]) {
+  private getStockLevel(currentStock: number, minStock: number = 10): {
+    level: 'CRITICAL' | 'LOW' | 'NORMAL' | 'HIGH' | 'EXCESS';
+    percentage: number;
+    message: string;
+    color: string;
+    icon: string;
+  } {
+    // Validar parámetros
+    if (currentStock < 0) currentStock = 0;
+    if (minStock <= 0) minStock = 1; // Valor por defecto seguro
+    // Calcular porcentaje basado en stock mínimo
+    const percentage = minStock > 0 ? (currentStock / minStock) * 100 : 100;
+    // Determinar nivel según rangos
+    if (currentStock === 0) {
+      return {
+        level: 'CRITICAL',
+        percentage: 0,
+        message: 'Sin stock disponible',
+        color: 'danger',
+        icon: 'alert-circle',
+      };
+    } else if (currentStock <= minStock * 0.2) {
+      return {
+        level: 'CRITICAL',
+        percentage: Math.round(percentage),
+        message: 'Stock crítico, reponer urgentemente',
+        color: 'danger',
+        icon: 'alert-triangle',
+      };
+    } else if (currentStock <= minStock * 0.5) {
+      return {
+        level: 'LOW',
+        percentage: Math.round(percentage),
+        message: 'Stock muy bajo',
+        color: 'warning',
+        icon: 'alert',
+      };
+    } else if (currentStock <= minStock) {
+      return {
+        level: 'LOW',
+        percentage: Math.round(percentage),
+        message: 'Stock bajo, considerar reponer',
+        color: 'warning',
+        icon: 'trending-down',
+      };
+    } else if (currentStock <= minStock * 2) {
+      return {
+        level: 'NORMAL',
+        percentage: Math.round(percentage),
+        message: 'Stock en niveles normales',
+        color: 'success',
+        icon: 'check-circle',
+      };
+    } else if (currentStock <= minStock * 4) {
+      return {
+        level: 'HIGH',
+        percentage: Math.round(percentage),
+        message: 'Stock alto',
+        color: 'info',
+        icon: 'trending-up',
+      };
+    } else {
+      return {
+        level: 'EXCESS',
+        percentage: Math.round(percentage),
+        message: 'Stock excesivo, considerar redistribución',
+        color: 'secondary',
+        icon: 'package',
+      };
+    }
+  }
+  private analyzeAttemptTimes(
+    attempts: Array<{ createdAt: Date | string; [key: string]: any }>,
+  ) {
     if (attempts.length < 2) {
       return null;
     }
-    const sortedAttempts = [...attempts].sort((a, b) => 
-      new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+    const sortedAttempts = [...attempts].sort(
+      (a, b) =>
+        new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
     );
 
-    const timeDifferences = [];
+    const timeDifferences: number[] = [];
     for (let i = 1; i < sortedAttempts.length; i++) {
-      const prevTime = new Date(sortedAttempts[i - 1].createdAt).getTime();
-      const currTime = new Date(sortedAttempts[i].createdAt).getTime();
-      const diffMinutes = Math.round((currTime - prevTime) / (1000 * 60));
+      const prevTime: number = new Date(
+        sortedAttempts[i - 1].createdAt,
+      ).getTime();
+      const currTime: number = new Date(sortedAttempts[i].createdAt).getTime();
+      const diffMinutes: number = Math.round(
+        (currTime - prevTime) / (1000 * 60),
+      );
       timeDifferences.push(diffMinutes);
     }
 
@@ -756,17 +839,25 @@ export class AdminService {
       maxTimeMinutes: maxTime,
       minTimeMinutes: minTime,
       totalTimeSpanMinutes: Math.round(
-        (new Date(sortedAttempts[sortedAttempts.length-1].createdAt).getTime() - 
-         new Date(sortedAttempts[0].createdAt).getTime()) / (1000 * 60)
+        (new Date(
+          sortedAttempts[sortedAttempts.length - 1].createdAt,
+        ).getTime() -
+          new Date(sortedAttempts[0].createdAt).getTime()) /
+          (1000 * 60),
       ),
     };
   }
   private generateRecommendations(attempts: any[]) {
-    const recommendations = [];
-    const failedAttempts = attempts.filter(a => a.isFailed);
+    const recommendations: Array<{
+      type: string;
+      title: string;
+      message: string;
+      severity: string;
+      action: string;
+    }> = [];
+    const failedAttempts = attempts.filter((a) => a.isFailed);
 
     if (failedAttempts.length > 0) {
-      // Análisis de errores comunes
       const errorCodes = failedAttempts.reduce((acc, attempt) => {
         if (attempt.errorCode) {
           acc[attempt.errorCode] = (acc[attempt.errorCode] || 0) + 1;
@@ -807,6 +898,7 @@ export class AdminService {
         minStock: true,
         maxStock: true,
         isAvailable: true,
+        lastSoldAt: true,
       },
     });
 
@@ -828,8 +920,7 @@ export class AdminService {
         `Stock resultante: ${newStock}`
       );
     }
-    const movementType = dto.type || 
-      (dto.adjustment > 0 ? StockMovementType.INCREMENT : StockMovementType.DECREMENT);
+    const movementType = dto.type 
     return await this.prisma.$transaction(async (tx) => {
       // Actualizar stock del producto
       const updatedProduct = await tx.product.update({
@@ -850,7 +941,7 @@ export class AdminService {
       const movement = await tx.stockMovement.create({
         data: {
           productId,
-          type: movementType,
+          type: movementType!,
           quantity: Math.abs(dto.adjustment),
           previousStock: product.stock,
           newStock,
@@ -860,7 +951,7 @@ export class AdminService {
           performedAt: new Date(),
         },
       });
-      const alerts = [];
+      const alerts: Array<{ type: string; message: string; severity: string }> = [];
       if (newStock <= product.minStock) {
         alerts.push({
           type: 'LOW_STOCK',
@@ -976,7 +1067,7 @@ export class AdminService {
     });
   }
   private buildRestockNotes(dto: RestockDto): string {
-    const notes = [];
+    const notes: string[] = [];
     if (dto.supplier) notes.push(`Proveedor: ${dto.supplier}`);
     if (dto.batchNumber) notes.push(`Lote: ${dto.batchNumber}`);
     if (dto.invoiceNumber) notes.push(`Factura: ${dto.invoiceNumber}`);
@@ -1047,12 +1138,20 @@ export class AdminService {
     };
   }
   async getLowStockProducts(threshold?: number) {
+    const where: Prisma.ProductWhereInput = {
+      isActive: true,
+    };
+
+    if (threshold !== undefined) {
+      where.stock = { lte: threshold };
+    } else {
+      where.stock = { lte: { minStock: true } as any };
+    }
+
     const products = await this.prisma.product.findMany({
       where: {
         isActive: true,
-        stock: {
-          lte: threshold || Prisma.sql`"minStock"`,
-        },
+        ...(threshold !== undefined ? { stock: { lte: threshold } }: {}),
       },
       orderBy: { stock: 'asc' },
       select: {
@@ -1070,7 +1169,7 @@ export class AdminService {
     return products.map(product => ({
       ...product,
       stockLevel: this.getStockLevel(product.stock, product.minStock),
-      daysSinceLastSale: product.lastSoldAt 
+      daysSinceLastSale: product.lastSoldAt
         ? Math.floor((Date.now() - product.lastSoldAt.getTime()) / (1000 * 60 * 60 * 24))
         : null,
       suggestedRestock: Math.max(product.minStock * 2 - product.stock, product.minStock),
@@ -1090,7 +1189,7 @@ export class AdminService {
       sortOrder = 'desc',
     } = params;
 
-    const skip = (page - 1) * limit;
+    const skip = (page! - 1) * limit!;
     const where: Prisma.UserWhereInput = {
       deletedAt: null, // Solo usuarios no eliminados
     };
@@ -1131,7 +1230,7 @@ export class AdminService {
         total,
         page,
         limit,
-        pages: Math.ceil(total / limit),
+        pages: Math.ceil(total / limit!),
         statistics,
       };
     } catch (error) {
