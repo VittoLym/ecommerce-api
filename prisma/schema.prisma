@@ -14,42 +14,185 @@ model User {
   name         String?
   phone        String?
   address      String?
+  avatar       String?         // URL de imagen de perfil
   role         Role            @default(USER)
+  
+  // Campos de estado
+  isActive     Boolean         @default(true)
+  isVerified   Boolean         @default(false)
+  emailVerified Boolean        @default(false)
+  
+  // Campos de seguridad
+  loginAttempts Int            @default(0)
+  lockedUntil   DateTime?      // Bloqueo temporal por muchos intentos
+  lastLogin     DateTime?
+  lastPasswordChange DateTime?
+  
+  // Campos de auditoría
   createdAt    DateTime        @default(now())
   updatedAt    DateTime        @updatedAt
+  deletedAt    DateTime?       // Soft delete
   
   // Relaciones
   cart         Cart?
   orders       Order[]
   refreshTokens RefreshToken[]
+  userActivities UserActivity[]
+  roleHistory UserRoleHistory[]
+  changedRoles UserRoleHistory[] @relation("ChangedByUser")
   
-  // Métodos virtuales
   @@map("users")
+  @@index([email])
+  @@index([role])
+  @@index([isActive])
+  @@index([createdAt])
+  @@index([deletedAt])
+}
+
+model UserActivity {
+  id          Int       @id @default(autoincrement())
+  userId      Int
+  action      String    // 'LOGIN', 'LOGOUT', 'PASSWORD_CHANGE', 'PROFILE_UPDATE', 'ORDER_CREATED'
+  ipAddress   String?
+  userAgent   String?
+  metadata    Json?     // Información adicional en JSON
+  performedAt DateTime  @default(now())
+  
+  // Relaciones
+  user User @relation(fields: [userId], references: [id])
+  
+  @@map("user_activities")
+  @@index([userId])
+  @@index([action])
+  @@index([performedAt])
+}
+
+// ========== ROLES ==========
+model UserRoleHistory {
+  id          Int       @id @default(autoincrement())
+  userId      Int
+  previousRole Role
+  newRole     Role
+  changedBy   Int?      // ID del admin que realizó el cambio
+  reason      String?
+  notes       String?
+  changedAt   DateTime  @default(now())
+  
+  // Relaciones
+  user User @relation(fields: [userId], references: [id])
+  changedByUser User? @relation("ChangedByUser", fields: [changedBy], references: [id])
+  
+  @@map("user_role_history")
+  @@index([userId])
+  @@index([changedAt])
+  @@index([newRole])
 }
 
 // ========== PRODUCTOS ==========
 model Product {
-  id          Int           @id @default(autoincrement())
-  name        String
-  description String?
-  price       Int
-  stock       Int           @default(0)
-  sku         String?       @unique
-  category    String?
-  image       String?
-  isActive    Boolean       @default(true)
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
+  id           Int      @id @default(autoincrement())
+  name         String
+  description  String?
+  price        Int
+  stock        Int      @default(0)
+  minStock     Int      @default(10)    // Stock mínimo para alertas
+  maxStock     Int?     // Stock máximo recomendado
+  sku          String?  @unique
+  category     String?
+  barcode      String?  @unique
+  image        String?
+  isActive     Boolean  @default(true)
+  isAvailable  Boolean  @default(true)  // Disponible para venta
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  
+  // Nuevos campos para gestión de stock
+  lastRestockedAt DateTime?
+  lastSoldAt      DateTime?
+  totalSold       Int      @default(0)
   
   // Relaciones
   cartItems   CartItem[]
   orderItems  OrderItem[]
+  stockMovements StockMovement[]
+  cost CostHistory[]
+  record RestockRecord[]
   
   @@map("products")
   @@index([sku])
   @@index([category])
+  @@index([barcode])
+  @@index([isAvailable])
+  @@index([stock])
 }
 
+// ========== MOVIMIENTOS DE STOCK ==========
+model StockMovement {
+  id          Int       @id @default(autoincrement())
+  productId   Int
+  type        StockMovementType
+  quantity    Int
+  previousStock Int
+  newStock    Int
+  referenceId Int?      // orderId, adjustmentId, etc.
+  referenceType String? // 'ORDER', 'ADJUSTMENT', 'RESTOCK', 'RETURN'
+  reason      String?
+  notes       String?
+  performedBy Int?      // userId del administrador
+  performedAt DateTime  @default(now())
+  
+  // Relaciones
+  product Product @relation(fields: [productId], references: [id])
+  
+  @@map("stock_movements")
+  @@index([productId])
+  @@index([type])
+  @@index([performedAt])
+  @@index([referenceType, referenceId])
+}
+
+enum StockMovementType {
+  INCREMENT  // Entrada de stock
+  DECREMENT  // Salida de stock
+  ADJUSTMENT // Ajuste manual
+}
+
+model RestockRecord {
+  id           Int      @id @default(autoincrement())
+  productId    Int
+  quantity     Int
+  unitCost     Int?
+  totalCost    Int?
+  batchNumber  String?
+  expiryDate   DateTime?
+  supplier     String?
+  invoiceNumber String?
+  notes        String?
+  restockedAt  DateTime @default(now())
+  
+  product      Product @relation(fields: [productId], references: [id])
+  
+  @@map("restock_records")
+  @@index([productId])
+  @@index([restockedAt])
+  @@index([batchNumber])
+  @@index([supplier])
+}
+
+model CostHistory {
+  id           Int      @id @default(autoincrement())
+  productId    Int
+  cost         Int      // Precio de costo
+  effectiveFrom DateTime @default(now())
+  effectiveTo  DateTime?
+  notes        String?
+  
+  product      Product @relation(fields: [productId], references: [id])
+  
+  @@map("cost_history")
+  @@index([productId])
+  @@index([effectiveFrom])
+}
 // ========== CARRITO ==========
 model Cart {
   id        Int        @id @default(autoincrement())
@@ -243,6 +386,8 @@ model RefreshToken {
 enum Role {
   USER
   ADMIN
+  MODERATOR
+  SUPPORT
 }
 
 enum OrderStatus {

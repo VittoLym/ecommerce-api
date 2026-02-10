@@ -6,7 +6,11 @@ import {
 import { PrismaService } from 'src/prisma/prisma.service';
 import { OrderStatus, Prisma } from '@prisma/client';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
+import { UpdateStockDto } from './dto/update-stock.dto';
+import { RestockDto } from './dto/restock.dto';
 import { PaymentStatus } from '@prisma/client';
+import { GetUsersDto } from './dto/get-users.dto';
+import { UpdateUserRoleDto } from './dto/update-user-role.dto';
 
 @Injectable()
 export class AdminService {
@@ -792,5 +796,735 @@ export class AdminService {
 
     const successfulIndex = attempts.findIndex(a => a.isSuccessful);
     return recommendations;
+  }
+  async updateStock(productId: number, dto: UpdateStockDto) {
+    const product = await this.prisma.product.findUnique({
+      where: { id: productId, isActive: true },
+      select: {
+        id: true,
+        name: true,
+        stock: true,
+        minStock: true,
+        maxStock: true,
+        isAvailable: true,
+      },
+    });
+
+    if (!product) {
+      throw new NotFoundException(`Producto con ID ${productId} no encontrado o inactivo`);
+    }
+
+    // 2. Validar el ajuste
+    const newStock = product.stock + dto.adjustment;
+    if (newStock < 0) {
+      throw new BadRequestException(
+        `No se puede reducir el stock a menos de 0. Stock actual: ${product.stock}, ajuste: ${dto.adjustment}`
+      );
+    }
+
+    if (product.maxStock && newStock > product.maxStock) {
+      throw new BadRequestException(
+        `El stock no puede exceder el máximo permitido (${product.maxStock}). ` +
+        `Stock resultante: ${newStock}`
+      );
+    }
+    const movementType = dto.type || 
+      (dto.adjustment > 0 ? StockMovementType.INCREMENT : StockMovementType.DECREMENT);
+    return await this.prisma.$transaction(async (tx) => {
+      // Actualizar stock del producto
+      const updatedProduct = await tx.product.update({
+        where: { id: productId },
+        data: {
+          stock: newStock,
+          isAvailable: newStock > 0,
+          updatedAt: new Date(),
+          lastSoldAt: dto.adjustment < 0 ? new Date() : product.lastSoldAt,
+        },
+        include: {
+          stockMovements: {
+            take: 5,
+            orderBy: { performedAt: 'desc' },
+          },
+        },
+      });
+      const movement = await tx.stockMovement.create({
+        data: {
+          productId,
+          type: movementType,
+          quantity: Math.abs(dto.adjustment),
+          previousStock: product.stock,
+          newStock,
+          referenceType: 'ADJUSTMENT',
+          reason: dto.reason || 'Ajuste manual de inventario',
+          notes: dto.notes,
+          performedAt: new Date(),
+        },
+      });
+      const alerts = [];
+      if (newStock <= product.minStock) {
+        alerts.push({
+          type: 'LOW_STOCK',
+          message: `Producto "${product.name}" tiene stock bajo (${newStock}/${product.minStock})`,
+          severity: newStock === 0 ? 'CRITICAL' : 'WARNING',
+        });
+        if (newStock === 0) {
+          await tx.product.update({
+            where: { id: productId },
+            data: { isAvailable: false },
+          });
+        }
+      }
+
+      // 6. Si se incrementó stock por encima del mínimo, habilitar producto
+      if (newStock > 0 && !product.isAvailable) {
+        await tx.product.update({
+          where: { id: productId },
+          data: { isAvailable: true },
+        });
+      }
+      return {
+        success: true,
+        message: `Stock actualizado de ${product.stock} a ${newStock} (${dto.adjustment > 0 ? '+' : ''}${dto.adjustment})`,
+        product: updatedProduct,
+        movement,
+        previousStock: product.stock,
+        newStock,
+        adjustment: dto.adjustment,
+        alerts,
+      };
+    });
+  }
+  async restockProduct(productId: number, dto: RestockDto) {
+    const product = await this.prisma.product.findUnique({
+      where: { id: productId, isActive: true },
+      select: {
+        id: true,
+        name: true,
+        stock: true,
+        minStock: true,
+        maxStock: true,
+        price: true,
+      },
+    });
+
+    if (!product) {
+      throw new NotFoundException(`Producto con ID ${productId} no encontrado o inactivo`);
+    }
+    const newStock = product.stock + dto.quantity;
+    if (product.maxStock && newStock > product.maxStock) {
+      throw new BadRequestException(
+        `La reposición excede el stock máximo permitido (${product.maxStock}). ` +
+        `Stock actual: ${product.stock}, reposición: ${dto.quantity}, resultante: ${newStock}`
+      );
+    }
+    return await this.prisma.$transaction(async (tx) => {
+      const updatedProduct = await tx.product.update({
+        where: { id: productId },
+        data: {
+          stock: newStock,
+          isAvailable: true,
+          lastRestockedAt: new Date(),
+          updatedAt: new Date(),
+        },
+      });
+      const movement = await tx.stockMovement.create({
+        data: {
+          productId,
+          type: StockMovementType.INCREMENT,
+          quantity: dto.quantity,
+          previousStock: product.stock,
+          newStock,
+          referenceType: 'RESTOCK',
+          reason: dto.supplier
+            ? `Reposición de inventario - Proveedor: ${dto.supplier}`
+            : 'Reposición de inventario',
+          notes: this.buildRestockNotes(dto),
+          performedAt: new Date(),
+        },
+      });
+      const restockRecord = await tx.restockRecord.create({
+        data: {
+          productId,
+          quantity: dto.quantity,
+          unitCost: dto.unitCost,
+          totalCost: dto.unitCost ? dto.quantity * dto.unitCost : null,
+          batchNumber: dto.batchNumber,
+          expiryDate: dto.expiryDate ? new Date(dto.expiryDate) : null,
+          supplier: dto.supplier,
+          invoiceNumber: dto.invoiceNumber,
+          notes: dto.notes,
+          restockedAt: new Date(),
+        },
+      });
+      if (dto.unitCost) {
+        await this.updateCostPrice(productId, dto.unitCost, tx);
+      }
+      const marginInfo = dto.unitCost
+        ? this.calculateMargin(product.price, dto.unitCost)
+        : null;
+
+      return {
+        success: true,
+        product: updatedProduct,
+        restockRecord,
+        movement,
+        previousStock: product.stock,
+        newStock,
+        quantityAdded: dto.quantity,
+        marginInfo,
+      };
+    });
+  }
+  private buildRestockNotes(dto: RestockDto): string {
+    const notes = [];
+    if (dto.supplier) notes.push(`Proveedor: ${dto.supplier}`);
+    if (dto.batchNumber) notes.push(`Lote: ${dto.batchNumber}`);
+    if (dto.invoiceNumber) notes.push(`Factura: ${dto.invoiceNumber}`);
+    if (dto.expiryDate) notes.push(`Vencimiento: ${dto.expiryDate}`);
+    if (dto.unitCost) notes.push(`Costo unitario: $${dto.unitCost}`);
+    if (dto.notes) notes.push(`Notas: ${dto.notes}`);
+    return notes.join(' | ');
+  }
+  private async updateCostPrice(productId: number, unitCost: number, tx: any) {
+    await tx.costHistory.create({
+      data: {
+        productId,
+        cost: unitCost,
+        effectiveFrom: new Date(),
+      },
+    });
+  }
+  private calculateMargin(sellingPrice: number, costPrice: number) {
+    const marginAmount = sellingPrice - costPrice;
+    const marginPercentage = (marginAmount / sellingPrice) * 100;
+    const markupPercentage = (marginAmount / costPrice) * 100;
+    return {
+      costPrice,
+      sellingPrice,
+      marginAmount,
+      marginPercentage: Math.round(marginPercentage * 100) / 100,
+      markupPercentage: Math.round(markupPercentage * 100) / 100,
+      isProfitable: marginAmount > 0,
+    };
+  }
+  async getStockHistory(productId: number, days: number = 30) {
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - days);
+
+    const history = await this.prisma.stockMovement.findMany({
+      where: {
+        productId,
+        performedAt: {
+          gte: startDate,
+        },
+      },
+      orderBy: { performedAt: 'desc' },
+      include: {
+        product: {
+          select: {
+            name: true,
+            sku: true,
+          },
+        },
+      },
+    });
+    const stats = history.reduce((acc, movement) => {
+      if (movement.type === 'INCREMENT') {
+        acc.totalIncoming += movement.quantity;
+      } else if (movement.type === 'DECREMENT') {
+        acc.totalOutgoing += movement.quantity;
+      }
+      return acc;
+    }, { totalIncoming: 0, totalOutgoing: 0 });
+    return {
+      history,
+      stats,
+      period: {
+        startDate,
+        endDate: new Date(),
+        days,
+      },
+    };
+  }
+  async getLowStockProducts(threshold?: number) {
+    const products = await this.prisma.product.findMany({
+      where: {
+        isActive: true,
+        stock: {
+          lte: threshold || Prisma.sql`"minStock"`,
+        },
+      },
+      orderBy: { stock: 'asc' },
+      select: {
+        id: true,
+        name: true,
+        sku: true,
+        stock: true,
+        minStock: true,
+        maxStock: true,
+        price: true,
+        lastSoldAt: true,
+        lastRestockedAt: true,
+      },
+    });
+    return products.map(product => ({
+      ...product,
+      stockLevel: this.getStockLevel(product.stock, product.minStock),
+      daysSinceLastSale: product.lastSoldAt 
+        ? Math.floor((Date.now() - product.lastSoldAt.getTime()) / (1000 * 60 * 60 * 24))
+        : null,
+      suggestedRestock: Math.max(product.minStock * 2 - product.stock, product.minStock),
+    }));
+  }
+  async getUsers(params: GetUsersDto) {
+    const {
+      page,
+      limit,
+      role,
+      isActive,
+      isVerified,
+      search,
+      email,
+      name,
+      sortBy = 'createdAt',
+      sortOrder = 'desc',
+    } = params;
+
+    const skip = (page - 1) * limit;
+    const where: Prisma.UserWhereInput = {
+      deletedAt: null, // Solo usuarios no eliminados
+    };
+
+    if (role) where.role = role;
+    if (isActive !== undefined) where.isActive = isActive;
+    if (isVerified !== undefined) where.isVerified = isVerified;
+    if (email) where.email = { contains: email, mode: 'insensitive' };
+    if (name) where.name = { contains: name, mode: 'insensitive' };
+    if (search) {
+      where.OR = [
+        { email: { contains: search, mode: 'insensitive' } },
+        { name: { contains: search, mode: 'insensitive' } },
+        { phone: { contains: search, mode: 'insensitive' } },
+      ];
+    }
+    const orderByField = this.validateUserSortField(sortBy);
+    const orderBy: Prisma.UserOrderByWithRelationInput = {
+      [orderByField]: sortOrder,
+    };
+
+    try {
+      const [users, total, statistics] = await Promise.all([
+        this.prisma.user.findMany({
+          where,
+          skip,
+          take: limit,
+          orderBy,
+          select: this.getUserSelectFields(),
+        }),
+        this.prisma.user.count({ where }),
+        this.getUserStatisticsInternal(),
+      ]);
+      const transformedUsers = users.map(user => this.transformUser(user));
+
+      return {
+        users: transformedUsers,
+        total,
+        page,
+        limit,
+        pages: Math.ceil(total / limit),
+        statistics,
+      };
+    } catch (error) {
+      console.error('Error en getUsers:', error);
+      throw error;
+    }
+  }
+  private getUserSelectFields(): Prisma.UserSelect {
+    return {
+      id: true,
+      email: true,
+      name: true,
+      phone: true,
+      address: true,
+      avatar: true,
+      role: true,
+      isActive: true,
+      isVerified: true,
+      emailVerified: true,
+      loginAttempts: true,
+      lastLogin: true,
+      createdAt: true,
+      updatedAt: true,
+      _count: {
+        select: {
+          orders: true,
+          refreshTokens: true,
+          userActivities: {
+            where: {
+              action: 'LOGIN',
+            },
+          },
+        },
+      },
+    };
+  }
+  private transformUser(user: any) {
+    return {
+      ...user,
+      // Información calculada
+      hasOrders: user._count.orders > 0,
+      totalOrders: user._count.orders,
+      totalLogins: user._count.userActivities,
+      lastLoginFormatted: user.lastLogin 
+        ? user.lastLogin.toLocaleDateString('es-ES', {
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+          })
+        : null,
+      createdAtFormatted: user.createdAt.toLocaleDateString('es-ES', {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+      }),
+      _count: undefined,
+    };
+  }
+  async updateUserRole(userId: number, dto: UpdateUserRoleDto, adminId: number) {
+    const user = await this.prisma.user.findUnique({
+      where: { 
+        id: userId,
+        deletedAt: null,
+      },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        role: true,
+        isActive: true,
+      },
+    });
+
+    if (!user) {
+      throw new NotFoundException(`Usuario con ID ${userId} no encontrado`);
+    }
+    if (!user.isActive) {
+      throw new BadRequestException(
+        `No se puede cambiar el rol de un usuario inactivo`
+      );
+    }
+    if (user.role === dto.role) {
+      throw new BadRequestException(
+        `El usuario ya tiene el rol ${dto.role}`
+      );
+    }
+    this.validateRoleTransition(user.role, dto.role);
+    return await this.prisma.$transaction(async (tx) => {
+      const updatedUser = await tx.user.update({
+        where: { id: userId },
+        data: {
+          role: dto.role,
+          updatedAt: new Date(),
+        },
+        select: this.getUserSelectFields(),
+      });
+      await tx.userRoleHistory.create({
+        data: {
+          userId,
+          previousRole: user.role,
+          newRole: dto.role,
+          changedBy: adminId,
+          reason: dto.reason || 'Cambio de rol administrativo',
+          notes: dto.notes,
+          changedAt: new Date(),
+        },
+      });
+      await tx.userActivity.create({
+        data: {
+          userId,
+          action: 'ROLE_CHANGED',
+          metadata: {
+            previousRole: user.role,
+            newRole: dto.role,
+            changedByAdminId: adminId,
+            reason: dto.reason,
+          },
+          performedAt: new Date(),
+        },
+      });
+
+      if (dto.role === 'ADMIN' && !updatedUser.emailVerified) {
+        await tx.user.update({
+          where: { id: userId },
+          data: { 
+            emailVerified: true,
+            isVerified: true,
+          },
+        });
+      }
+
+      return {
+        success: true,
+        message: `Rol de ${user.email} actualizado de ${user.role} a ${dto.role}`,
+        user: this.transformUser(updatedUser),
+        previousRole: user.role,
+        newRole: dto.role,
+        changedBy: adminId,
+        changedAt: new Date(),
+      };
+    });
+  }
+  private validateRoleTransition(currentRole: Role, newRole: Role) {
+    const roleHierarchy = {
+      USER: ['MODERATOR', 'SUPPORT'],
+      MODERATOR: ['USER', 'SUPPORT'],
+      SUPPORT: ['USER', 'MODERATOR', 'ADMIN'],
+      ADMIN: ['USER', 'MODERATOR', 'SUPPORT'],
+    };
+    if (!roleHierarchy[currentRole]?.includes(newRole)) {
+      throw new BadRequestException(
+        `No se puede cambiar el rol de ${currentRole} a ${newRole}. ` +
+        `Transiciones permitidas desde ${currentRole}: ${roleHierarchy[currentRole]?.join(', ')}`
+      );
+    }
+
+    // Validaciones adicionales
+    if (newRole === 'ADMIN') {
+      // agregar validaciones adicionales para asignar rol ADMIN
+    }
+  }
+  private validateUserSortField(sortBy: string): string {
+    const allowedFields = [
+      'createdAt',
+      'updatedAt',
+      'lastLogin',
+      'email',
+      'name',
+      'role',
+      'id',
+    ];
+
+    return allowedFields.includes(sortBy) ? sortBy : 'createdAt';
+  }
+  async getUserStatistics() {
+    const [
+      totalUsers,
+      activeUsers,
+      verifiedUsers,
+      usersByRole,
+      newUsersLast7Days,
+      newUsersLast30Days,
+      userActivity,
+    ] = await Promise.all([
+      this.prisma.user.count({ where: { deletedAt: null } }),
+      this.prisma.user.count({ where: { deletedAt: null, isActive: true } }),
+      this.prisma.user.count({ where: { deletedAt: null, isVerified: true } }),
+      this.prisma.user.groupBy({
+        by: ['role'],
+        where: { deletedAt: null },
+        _count: { _all: true },
+      }),
+      this.prisma.user.count({
+        where: {
+          deletedAt: null,
+          createdAt: {
+            gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
+          },
+        },
+      }),
+      this.prisma.user.count({
+        where: {
+          deletedAt: null,
+          createdAt: {
+            gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
+          },
+        },
+      }),
+      this.prisma.userActivity.groupBy({
+        by: ['action'],
+        where: {
+          performedAt: {
+            gte: new Date(Date.now() - 24 * 60 * 60 * 1000),
+          },
+        },
+        _count: { _all: true },
+      }),
+    ]);
+    const roles = usersByRole.reduce((acc, item) => {
+      acc[item.role] = item._count._all;
+      return acc;
+    }, {});
+    const dailyActivity = userActivity.reduce((acc, item) => {
+      acc[item.action] = item._count._all;
+      return acc;
+    }, {});
+
+    return {
+      totals: {
+        all: totalUsers,
+        active: activeUsers,
+        verified: verifiedUsers,
+        inactive: totalUsers - activeUsers,
+        verificationRate: totalUsers > 0 ? (verifiedUsers / totalUsers) * 100 : 0,
+      },
+      byRole: roles,
+      growth: {
+        last7Days: newUsersLast7Days,
+        last30Days: newUsersLast30Days,
+        dailyAverage: newUsersLast30Days / 30,
+      },
+      activity: {
+        last24Hours: dailyActivity,
+        totalLogins: dailyActivity['LOGIN'] || 0,
+      },
+      calculated: {
+        activeRate: totalUsers > 0 ? (activeUsers / totalUsers) * 100 : 0,
+        userGrowthRate: totalUsers > 0 
+          ? ((newUsersLast30Days / totalUsers) * 100) 
+          : 0,
+      },
+    };
+  }
+  private async getUserStatisticsInternal() {
+    const [total, byRole, active] = await Promise.all([
+      this.prisma.user.count({ where: { deletedAt: null } }),
+      this.prisma.user.groupBy({
+        by: ['role'],
+        where: { deletedAt: null },
+        _count: { _all: true },
+      }),
+      this.prisma.user.count({ where: { deletedAt: null, isActive: true } }),
+    ]);
+
+    return {
+      total,
+      byRole: byRole.reduce((acc, item) => {
+        acc[item.role] = item._count._all;
+        return acc;
+      }, {}),
+      active,
+      inactive: total - active,
+    };
+  }
+  async getUserActivity(userId: number, params: { page: number; limit: number }) {
+    const userExists = await this.prisma.user.findUnique({
+      where: { id: userId, deletedAt: null },
+      select: { id: true },
+    });
+    if (!userExists) {
+      throw new NotFoundException(`Usuario con ID ${userId} no encontrado`);
+    }
+    const { page, limit } = params;
+    const skip = (page - 1) * limit;
+    const [activities, total] = await Promise.all([
+      this.prisma.userActivity.findMany({
+        where: { userId },
+        skip,
+        take: limit,
+        orderBy: { performedAt: 'desc' },
+        select: {
+          id: true,
+          action: true,
+          ipAddress: true,
+          userAgent: true,
+          metadata: true,
+          performedAt: true,
+        },
+      }),
+      this.prisma.userActivity.count({ where: { userId } }),
+    ]);
+    const transformedActivities = activities.map(activity => ({
+      ...activity,
+      actionLabel: this.getActionLabel(activity.action),
+      performedAtFormatted: activity.performedAt.toLocaleDateString('es-ES', {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+      }),
+      isSuspicious: this.isSuspiciousActivity(activity),
+    }));
+
+    return {
+      activities: transformedActivities,
+      total,
+      page,
+      limit,
+      pages: Math.ceil(total / limit),
+    };
+  }
+  private getActionLabel(action: string): string {
+    const actionLabels = {
+      LOGIN: 'Inicio de sesión',
+      LOGOUT: 'Cierre de sesión',
+      PASSWORD_CHANGE: 'Cambio de contraseña',
+      PROFILE_UPDATE: 'Actualización de perfil',
+      ORDER_CREATED: 'Orden creada',
+      ROLE_CHANGED: 'Rol cambiado',
+      USER_LIST_VIEWED: 'Lista de usuarios vista',
+      USER_ROLE_CHANGED: 'Rol de usuario cambiado',
+    };
+
+    return actionLabels[action] || action;
+  }
+  private isSuspiciousActivity(activity: any): boolean {
+    // Lógica básica para detectar actividad sospechosa
+    if (activity.action === 'LOGIN' && activity.ipAddress) {
+      // verificar contra una lista de IPs sospechosas
+      // o detectar patrones anómalos
+      return false; // Implementar lógica real aquí
+    }
+    return false;
+  }
+  async logAdminActivity(adminId: number, action: string, metadata?: any) {
+    try {
+      await this.prisma.userActivity.create({
+        data: {
+          userId: adminId,
+          action,
+          metadata,
+          performedAt: new Date(),
+        },
+      });
+    } catch (error) {
+      console.error('Error registrando actividad de admin:', error);
+    }
+  }
+  async searchUsers(criteria: {
+    email?: string;
+    name?: string;
+    phone?: string;
+    role?: Role;
+    isActive?: boolean;
+  }) {
+    const where: Prisma.UserWhereInput = {
+      deletedAt: null,
+    };
+
+    if (criteria.email) where.email = { contains: criteria.email, mode: 'insensitive' };
+    if (criteria.name) where.name = { contains: criteria.name, mode: 'insensitive' };
+    if (criteria.phone) where.phone = { contains: criteria.phone, mode: 'insensitive' };
+    if (criteria.role) where.role = criteria.role;
+    if (criteria.isActive !== undefined) where.isActive = criteria.isActive;
+
+    const users = await this.prisma.user.findMany({
+      where,
+      take: 50, // Limitar resultados
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        role: true,
+        isActive: true,
+        createdAt: true,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return users;
   }
 }

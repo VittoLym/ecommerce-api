@@ -4,12 +4,14 @@ import {
   ParseIntPipe,
   Param,
   Body,
+  Post,
   UsePipes,
   ValidationPipe,
   DefaultValuePipe,
   BadRequestException,
   NotFoundException,
   Get,
+  Req,
   Patch,
   Query,
   HttpException,
@@ -20,6 +22,10 @@ import { JwtAuthGuard } from 'src/auth/jwt-auth.guard';
 import { RolesGuard } from 'src/auth/role.guard';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 import { Roles } from 'src/auth/roles.decorator';
+import { UpdateStockDto } from './dto/update-stock.dto';
+import { RestockDto } from './dto/restock.dto';
+import { GetUsersDto } from './dto/get-users.dto';
+import { UpdateUserRoleDto } from './dto/update-user-role.dto';
 
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles('ADMIN')
@@ -185,7 +191,6 @@ export class AdminController {
       );
     }
   }
-
   @Get('orders/:id/attempts')
   async getOrderPaymentAttempts(@Param('id', ParseIntPipe) orderId: number) {
     try {
@@ -220,7 +225,6 @@ export class AdminController {
       );
     }
   }
-
   private generateAttemptsSummary(attempts: any[]) {
     if (attempts.length === 0) {
       return {
@@ -254,5 +258,310 @@ export class AdminController {
       totalAmountCaptured,
       difference: totalAmountAttempted - totalAmountCaptured,
     };
+  }
+
+  @Patch('products/:id/stock')
+  @UsePipes(new ValidationPipe({ transform: true }))
+  async updateStock(
+    @Param('id', ParseIntPipe) productId: number,
+    @Body() updateStockDto: UpdateStockDto,
+  ) {
+    try {
+      // Validación adicional
+      if (updateStockDto.adjustment === 0) {
+        throw new BadRequestException('El ajuste no puede ser 0');
+      }
+
+      const result = await this.adminService.updateStock(
+        productId,
+        updateStockDto,
+      );
+
+      if (!result.success) {
+        throw new BadRequestException(result.message);
+      }
+
+      return {
+        success: true,
+        message: result.message,
+        data: {
+          product: result.product,
+          movement: result.movement,
+          stockInfo: {
+            previousStock: result.previousStock,
+            newStock: result.newStock,
+            adjustment: result.adjustment,
+            stockLevel: this.getStockLevel(result.newStock, result.product.minStock),
+          },
+        },
+      };
+    } catch (error) {
+      if (
+        error instanceof NotFoundException ||
+        error instanceof BadRequestException
+      ) {
+        throw error;
+      }
+
+      console.error(`Error actualizando stock del producto ${productId}:`, error);
+
+      throw new HttpException(
+        {
+          success: false,
+          message: 'Error al actualizar el stock',
+          error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+        },
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
+  @Post('products/:id/restock')
+  @UsePipes(new ValidationPipe({ transform: true }))
+  async restockProduct(
+    @Param('id', ParseIntPipe) productId: number,
+    @Body() restockDto: RestockDto,
+  ) {
+    try {
+      const result = await this.adminService.restockProduct(
+        productId,
+        restockDto,
+      );
+
+      return {
+        success: true,
+        message: 'Producto repuesto exitosamente',
+        data: {
+          product: result.product,
+          restock: result.restockRecord,
+          stockInfo: {
+            previousStock: result.previousStock,
+            newStock: result.newStock,
+            quantityAdded: restockDto.quantity,
+            totalValue: restockDto.unitCost 
+              ? restockDto.quantity * restockDto.unitCost 
+              : null,
+          },
+        },
+      };
+    } catch (error) {
+      if (
+        error instanceof NotFoundException ||
+        error instanceof BadRequestException
+      ) {
+        throw error;
+      }
+
+      console.error(`Error reponiendo stock del producto ${productId}:`, error);
+
+      throw new HttpException(
+        {
+          success: false,
+          message: 'Error al reponer el stock',
+          error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+        },
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+  private getStockLevel(currentStock: number, minStock: number = 10): {
+    level: 'CRITICAL' | 'LOW' | 'NORMAL' | 'HIGH' | 'EXCESS';
+    percentage: number;
+    message: string;
+  } {
+    const percentage = (currentStock / minStock) * 100;
+    if (currentStock <= 0) {
+      return {
+        level: 'CRITICAL',
+        percentage: 0,
+        message: 'Sin stock disponible',
+      };
+    } else if (currentStock <= minStock * 0.3) {
+      return {
+        level: 'CRITICAL',
+        percentage,
+        message: 'Stock crítico, reponer urgentemente',
+      };
+    } else if (currentStock <= minStock) {
+      return {
+        level: 'LOW',
+        percentage,
+        message: 'Stock bajo, considerar reponer',
+      };
+    } else if (currentStock <= minStock * 2) {
+      return {
+        level: 'NORMAL',
+        percentage,
+        message: 'Stock en niveles normales',
+      };
+    } else if (currentStock <= minStock * 5) {
+      return {
+        level: 'HIGH',
+        percentage,
+        message: 'Stock alto',
+      };
+    } else {
+      return {
+        level: 'EXCESS',
+        percentage,
+        message: 'Stock excesivo, considerar redistribución',
+      };
+    }
+  }
+
+  @Get('users')
+  @UsePipes(new ValidationPipe({ transform: true }))
+  async getUsers(
+    @Query() queryParams: GetUsersDto,
+    @Req() req,
+  ) {
+    try {
+      const result = await this.adminService.getUsers(queryParams);
+      await this.adminService.logAdminActivity(
+        req.user.userId,
+        'USER_LIST_VIEWED',
+        {
+          filters: queryParams,
+          resultCount: result.total,
+        },
+      );
+      return {
+        success: true,
+        data: {
+          users: result.users,
+          statistics: result.statistics,
+        },
+        meta: {
+          total: result.total,
+          page: result.page,
+          limit: result.limit,
+          pages: result.pages,
+        },
+      };
+    } catch (error) {
+      console.error('Error obteniendo usuarios:', error);
+
+      throw new HttpException(
+        {
+          success: false,
+          message: 'Error al obtener usuarios',
+          error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+        },
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+  @Patch('users/:id/role')
+  @UsePipes(new ValidationPipe({ transform: true }))
+  async updateUserRole(
+    @Param('id', ParseIntPipe) userId: number,
+    @Body() updateUserRoleDto: UpdateUserRoleDto,
+    @Req() req,
+  ) {
+    try {
+      // Validación adicional
+      if (userId === req.user.userId) {
+        throw new BadRequestException('No puedes cambiar tu propio rol');
+      }
+
+      const result = await this.adminService.updateUserRole(
+        userId,
+        updateUserRoleDto,
+        req.user.userId, // ID del admin que realiza el cambio
+      );
+
+      if (!result.success) {
+        throw new BadRequestException(result.message);
+      }
+      await this.adminService.logAdminActivity(
+        req.user.userId,
+        'USER_ROLE_CHANGED',
+        {
+          targetUserId: userId,
+          previousRole: result.previousRole,
+          newRole: result.newRole,
+          reason: updateUserRoleDto.reason,
+        },
+      );
+
+      return {
+        success: true,
+        message: `Rol de usuario actualizado exitosamente`,
+        data: {
+          user: result.user,
+          roleChange: {
+            previousRole: result.previousRole,
+            newRole: result.newRole,
+            changedBy: result.changedBy,
+            changedAt: result.changedAt,
+            reason: updateUserRoleDto.reason,
+          },
+        },
+      };
+    } catch (error) {
+      if (
+        error instanceof NotFoundException ||
+        error instanceof BadRequestException
+      ) {
+        throw error;
+      }
+
+      console.error(`Error actualizando rol del usuario ${userId}:`, error);
+
+      throw new HttpException(
+        {
+          success: false,
+          message: 'Error al actualizar el rol del usuario',
+          error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+        },
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+  @Get('users/statistics')
+  async getUserStatistics() {
+    try {
+      const statistics = await this.adminService.getUserStatistics();
+      return {
+        success: true,
+        data: statistics,
+        generatedAt: new Date().toISOString(),
+      };
+    } catch (error) {
+      console.error('Error obteniendo estadísticas de usuarios:', error);
+      throw new HttpException(
+        {
+          success: false,
+          message: 'Error al obtener estadísticas de usuarios',
+        },
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+  @Get('users/:id/activity')
+  async getUserActivity(
+    @Param('id', ParseIntPipe) userId: number,
+    @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number = 1,
+    @Query('limit', new DefaultValuePipe(50), ParseIntPipe) limit: number = 50,
+  ) {
+    try {
+      const activity = await this.adminService.getUserActivity(userId, { page, limit });
+      return {
+        success: true,
+        data: activity,
+      };
+    } catch (error) {
+      if (error instanceof NotFoundException) {
+        throw error;
+      }
+      console.error(`Error obteniendo actividad del usuario ${userId}:`, error);
+      throw new HttpException(
+        {
+          success: false,
+          message: 'Error al obtener actividad del usuario',
+        },
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
   }
 }
