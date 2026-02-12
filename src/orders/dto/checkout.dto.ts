@@ -5,6 +5,7 @@ import {
   IsUUID,
   IsNotEmpty,
 } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { PaymentMethod } from '@prisma/client';
 
 export class CheckoutDto {
@@ -27,7 +28,4 @@ export class CheckoutDto {
   @IsNotEmpty()
   @IsUUID(4)
   idempotencyKey: string; // 👈 NUEVO: Obligatorio
-}
-function ApiProperty(arg0: { description: string; example: string; }): (target: CheckoutDto, propertyKey: "idempotencyKey") => void {
-  throw new Error('Function not implemented.');
 }
