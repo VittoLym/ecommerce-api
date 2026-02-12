@@ -40,6 +40,7 @@ model User {
   userActivities UserActivity[]
   roleHistory UserRoleHistory[]
   changedRoles UserRoleHistory[] @relation("ChangedByUser")
+  idempotency_keys IdempotencyKey[]
   
   @@map("users")
   @@index([email])
@@ -380,6 +381,23 @@ model RefreshToken {
   @@map("refresh_tokens")
   @@index([userId])
   @@index([tokenHash])
+}
+
+model IdempotencyKey {
+  id          String   @id // UUID
+  userId      Int
+  resource    String   // 'checkout', 'payment', etc.
+  resourceId  Int?     // orderId, paymentId, etc.
+  requestHash String   // Hash de la petición para validación
+  response    Json?    // Respuesta cacheada
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@unique([userId, id]) // Un usuario no puede reusar la misma key
+  @@map("idempotency_keys")
+  @@index([expiresAt])
 }
 
 // ========== ENUMS ==========

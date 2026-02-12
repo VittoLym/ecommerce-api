@@ -3,14 +3,19 @@ import {
   UseGuards,
   Req,
   Get,
+  Body,
   Post,
   Param,
   ParseIntPipe,
+  HttpCode,
+  HttpStatus,
 } from '@nestjs/common';
 import { JwtAuthGuard } from 'src/auth/jwt-auth.guard';
 import { OrdersService } from './orders.service';
 import { RolesGuard } from 'src/auth/role.guard';
 import { Roles } from 'src/auth/roles.decorator';
+import { CheckoutDto } from './dto/checkout.dto';
+import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 
 @UseGuards(JwtAuthGuard)
 @Controller('orders')
@@ -18,8 +23,15 @@ export class OrdersController {
   constructor(private ordersService: OrdersService) {}
 
   @Post('checkout')
-  checkout(@Req() req) {
-    return this.ordersService.checkout(req.user.userId);
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({ summary: 'Procesar checkout y crear orden' })
+  @ApiResponse({ status: 201, description: 'Orden creada exitosamente' })
+  @ApiResponse({ status: 400, description: 'Carrito vacío o datos inválidos' })
+  @ApiResponse({ status: 409, description: 'Stock insuficiente' })
+  async checkout(@Req() req, @Body() checkoutDto: CheckoutDto) {
+    const userId = req.user.userId;
+    return this.ordersService.checkout(userId, checkoutDto);
   }
 
   @Get()
